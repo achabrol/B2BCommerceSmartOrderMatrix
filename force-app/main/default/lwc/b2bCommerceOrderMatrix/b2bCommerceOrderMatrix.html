@@ -1,0 +1,191 @@
+<template>
+    <div class="matrix-container slds-card">
+        
+        <div class="left-main-section">
+
+            <div class="header-container">
+                <div class="header-titles">
+                    <h2 class="slds-text-heading_medium slds-text-title_bold">Quick Order</h2>
+                    <p class="slds-text-body_small slds-text-color_weak">Based on your Store Catalog</p>
+                </div>
+                
+                <div class="header-controls">
+                    <div class="source-selector">
+                        <lightning-combobox
+                            name="viewSource"
+                            label="View Source"
+                            variant="label-hidden"
+                            value={currentSourceValue}
+                            placeholder="Select Catalog or Order..."
+                            options={sourceOptions}
+                            onchange={handleSourceChange}
+                            class="source-dropdown">
+                        </lightning-combobox>
+                    </div>
+
+                    <div class="header-search">
+                        <lightning-input 
+                            type="search" 
+                            variant="label-hidden" 
+                            placeholder="Search by Name or SKU..." 
+                            onchange={handleSearchChange}
+                            value={searchTerm}
+                            class="search-input">
+                        </lightning-input>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid-content-area">
+                <template if:true={isLoading}>
+                    <div class="slds-is-relative slds-m-vertical_large spinner-container">
+                        <lightning-spinner alternative-text="Loading" size="medium" variant="brand"></lightning-spinner>
+                    </div>
+                </template>
+
+                <template if:true={error}>
+                    <div class="slds-notify slds-notify_alert slds-theme_error" role="alert">
+                        <h2>{error}</h2>
+                    </div>
+                </template>
+
+                <template if:false={isLoading}>
+                    <template if:true={products.length}>
+                        <div class="table-scroll-container">
+                            <table class="slds-table slds-table_bordered slds-table_cell-buffer slds-no-row-hover">
+                                <thead>
+                                    <tr class="slds-line-height_reset">
+                                        <th scope="col" style="width: 85px;">Product</th>
+                                        <th scope="col">Details</th>
+                                        <th scope="col" style="width: 11%;">Availability</th>
+                                        <th scope="col" style="width: 10%;" class="header-align-right">Pricing</th>
+                                        <th scope="col" style="width: 160px;" class="header-align-right">Quantity</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <template for:each={products} for:item="prod">
+                                        <tr key={prod.id}>
+                                            <td>
+                                                <div class="img-wrapper">
+                                                    <template if:true={prod.imgUrl}>
+                                                        <img src={prod.imgUrl} alt={prod.name} />
+                                                    </template>
+                                                    <template if:false={prod.imgUrl}>
+                                                        <lightning-icon icon-name="utility:image" size="large"></lightning-icon>
+                                                    </template>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div class="product-details-header">
+                                                    <a href={prod.productUrl} class="product-name-link slds-text-title_bold">
+                                                        {prod.name}
+                                                    </a>
+                                                </div>
+                                                <template if:true={prod.promoName}>
+                                                    <div class="promo-badge">{prod.promoName}</div>
+                                                </template>
+                                                <div class="product-sku">SKU: {prod.sku}</div>
+                                                <template if:true={prod.tierList}>
+                                                    <div class="tiers-container">
+                                                        <template for:each={prod.tierList} for:item="tier">
+                                                            <span key={tier.key} class={tier.cssClass}>{tier.label}</span>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                                <template if:true={prod.ruleList}>
+                                                    <div class="rules-container">
+                                                        <template for:each={prod.ruleList} for:item="rule">
+                                                            <span key={rule.key} class={rule.cssClass}>{rule.label}</span>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                                <template if:true={prod.cartQty}>
+                                                    <div class="cart-badge slds-m-top_xx-small">
+                                                        In Cart: {prod.cartQty}
+                                                    </div>
+                                                </template>
+                                            </td>
+                                            <td>
+                                                <span class={prod.stockClass}>{prod.stockLabel}</span>
+                                            </td>
+                                            <td>
+                                                <div class="price-container">
+                                                    <span class={prod.priceClass} style="font-size: 1rem;">
+                                                        <lightning-formatted-number 
+                                                            value={prod.displayUnitPrice} 
+                                                            format-style="currency" 
+                                                            currency-code={prod.currencyCode}>
+                                                        </lightning-formatted-number>
+                                                    </span>
+                                                    <template if:true={prod.showListPrice}>
+                                                        <span class="list-price">
+                                                            <lightning-formatted-number 
+                                                                value={prod.displayListPrice} 
+                                                                format-style="currency" 
+                                                                currency-code={prod.currencyCode}>
+                                                            </lightning-formatted-number>
+                                                        </span>
+                                                    </template>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div class="qty-selector-container">
+                                                    <button class="qty-btn qty-btn-left" onclick={handleDecrement} data-id={prod.id}>
+                                                        <lightning-icon icon-name="utility:dash" size="xx-small"></lightning-icon>
+                                                    </button>
+                                                    <input 
+                                                        type="number" 
+                                                        class={prod.inputClass} 
+                                                        value={prod.qtyValue} 
+                                                        data-id={prod.id}
+                                                        onchange={handleQtyChange}
+                                                        min="0" step={prod.increment} />
+                                                    <button class="qty-btn qty-btn-right" onclick={handleIncrement} data-id={prod.id}>
+                                                        <lightning-icon icon-name="utility:add" size="xx-small"></lightning-icon>
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </template>
+                    
+                    <template if:false={products.length}>
+                        <div class="slds-p-around_large slds-text-align_center slds-text-color_weak">
+                            No products found matching your criteria.
+                        </div>
+                    </template>
+                </template>
+            </div>
+
+            <div class="footer-actions">
+                <div class="left-actions">
+                    Nb of Products: <strong>{productCount}</strong>
+                </div>
+                <div class="right-actions">
+                    <div class="total-summary slds-m-right_medium">
+                        Adding <strong>{totalItemsToAdd}</strong> items
+                    </div>
+                    <lightning-button 
+                        variant="brand" 
+                        label="Add to Cart" 
+                        onclick={handleAddToCart} 
+                        disabled={isAddToCartDisabled}
+                        class="slds-m-left_x-small">
+                    </lightning-button>
+                </div>
+            </div>
+
+        </div> 
+
+        <div class="right-ai-panel">
+            <c-b2b-ai-assistant 
+                products={products} 
+                onaddproduct={handleAiAddProduct}>
+            </c-b2b-ai-assistant>
+        </div>
+
+    </div>
+</template>

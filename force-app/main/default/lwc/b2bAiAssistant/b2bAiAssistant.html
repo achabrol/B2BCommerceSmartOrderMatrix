@@ -1,0 +1,75 @@
+<template>
+    <div class="assistant-container">
+        
+        <div class="chat-header">
+            <div class="header-content">
+                <lightning-icon icon-name="utility:einstein" size="small" class="slds-m-right_small"></lightning-icon>
+                <div class="header-text">
+                    <h2 class="slds-text-heading_small slds-text-color_default slds-font-weight_bold">Einstein Buyer Assistant</h2>
+                    <p class="slds-text-body_small slds-text-color_weak">Here to help you</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-messages" ref="chatbox">
+            <template for:each={messages} for:item="msg">
+                <div key={msg.id} class={msg.wrapperClass}>
+                    <div class={msg.bubbleClass}>
+                        <div class="msg-text">{msg.text}</div>
+                        
+                        <template if:true={msg.products}>
+                            <template for:each={msg.products} for:item="pCard">
+                                <div key={pCard.id} class="product-card">
+                                    <div class="card-image"><img src={pCard.imgUrl} alt={pCard.name}/></div>
+                                    <div class="card-details">
+                                        <div class="card-title">{pCard.name}</div>
+                                        <div class="card-sku">SKU: {pCard.sku}</div>
+                                        
+                                        <div class="card-price-container">
+                                            <template if:true={pCard.listPrice}>
+                                                <span class="list-price" style="text-decoration: line-through; color: #747474; font-size: 0.85em; margin-right: 6px;">
+                                                    <lightning-formatted-number value={pCard.listPrice} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
+                                                </span>
+                                            </template>
+                                            
+                                            <span class="current-price" style="font-weight: bold;">
+                                                <lightning-formatted-number value={pCard.price} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
+                                            </span>
+                                        </div>
+
+                                        <template if:true={pCard.promo}>
+                                            <div class="card-sku" style="color:#ba0517; font-weight:bold; font-size: 0.8em;">{pCard.promo}</div>
+                                        </template>
+                                    </div>
+                                    <div class="card-actions">
+                                        <button class="add-btn" onclick={handleAddRequest} data-sku={pCard.sku} data-qty="1">Add +1</button>
+                                    </div>
+                                </div>
+                            </template>
+                        </template>
+
+                    </div>
+                    <template if:true={msg.isAi}>
+                        <div class="avatar-icon"><lightning-icon icon-name="utility:einstein" size="xx-small"></lightning-icon></div>
+                    </template>
+                </div>
+            </template>
+            <template if:true={isTyping}>
+                <div class="message-wrapper left">
+                    <div class="chat-bubble left typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+                </div>
+            </template>
+        </div>
+
+        <div class="chat-input-area">
+            <div class="input-wrapper">
+                <input type="text" class="custom-input" placeholder="Ask for a product..." value={userInput} onkeyup={handleKeyUp} onchange={handleInputChange} />
+                <button class="send-btn" onclick={handleSend}>
+                    <lightning-icon icon-name="utility:send" size="x-small" class="icon-white"></lightning-icon>
+                </button>
+            </div>
+            <div class="legal-text">AI Assistant can make mistakes. Please verify items.</div>
+        </div>
+
+    </div>
+</template>
