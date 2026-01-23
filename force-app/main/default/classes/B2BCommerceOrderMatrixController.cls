@@ -1,6 +1,6 @@
 /**
  * @description Contrôleur B2B Order Matrix
- * UPDATE : Instruction de langue ajoutée au Prompt IA.
+ * VERSION CORRIGÉE : Filtre strict pour exclure les champs techniques "External ID" des variations.
  */
 public without sharing class B2BCommerceOrderMatrixController {
 
@@ -82,46 +82,20 @@ public without sharing class B2BCommerceOrderMatrixController {
         query += 'ORDER BY OrderedDate DESC LIMIT 100';
 
         List<OrderSummary> orders = Database.query(query);
-        
         List<Map<String, Object>> orderList = new List<Map<String, Object>>();
         Set<Id> orderIds = new Set<Id>();
         
         for (OrderSummary ord : orders) {
             orderIds.add(ord.Id);
-            orderList.add(new Map<String, Object>{
-                'id' => ord.Id,
-                'orderNumber' => ord.OrderNumber,
-                'orderedDate' => ord.OrderedDate.format('yyyy-MM-dd HH:mm'),
-                'grandTotalAmount' => ord.GrandTotalAmount,
-                'status' => ord.Status,
-                'currencyIsoCode' => ord.CurrencyIsoCode
-            });
+            orderList.add(new Map<String, Object>{ 'id' => ord.Id, 'orderNumber' => ord.OrderNumber, 'orderedDate' => ord.OrderedDate.format('yyyy-MM-dd HH:mm'), 'grandTotalAmount' => ord.GrandTotalAmount, 'status' => ord.Status, 'currencyIsoCode' => ord.CurrencyIsoCode });
         }
 
         List<Map<String, Object>> allItemsList = new List<Map<String, Object>>();
         if (!orderIds.isEmpty()) {
-            List<OrderItemSummary> allItems = [
-                SELECT OrderSummaryId, Product2Id, Quantity 
-                FROM OrderItemSummary 
-                WHERE OrderSummaryId IN :orderIds 
-                AND Product2Id != null 
-                AND Type != 'Delivery Charge'
-                AND OriginalOrderItem.ParentOrderItemId = null 
-            ];
-
-            for(OrderItemSummary item : allItems) {
-                allItemsList.add(new Map<String, Object>{
-                    'orderId' => item.OrderSummaryId,
-                    'productId' => item.Product2Id,
-                    'quantity' => item.Quantity
-                });
-            }
+            List<OrderItemSummary> allItems = [SELECT OrderSummaryId, Product2Id, Quantity FROM OrderItemSummary WHERE OrderSummaryId IN :orderIds AND Product2Id != null AND Type != 'Delivery Charge' AND OriginalOrderItem.ParentOrderItemId = null];
+            for(OrderItemSummary item : allItems) { allItemsList.add(new Map<String, Object>{ 'orderId' => item.OrderSummaryId, 'productId' => item.Product2Id, 'quantity' => item.Quantity }); }
         }
-
-        return new Map<String, Object>{
-            'orders' => orderList,
-            'allItems' => allItemsList
-        };
+        return new Map<String, Object>{ 'orders' => orderList, 'allItems' => allItemsList };
     }
 
     // --- 3. ORDER PRODUCTS (INCHANGÉ) ---
@@ -136,62 +110,35 @@ public without sharing class B2BCommerceOrderMatrixController {
         
         if (String.isBlank(webstoreId)) return responseMap;
 
-        List<OrderItemSummary> orderItems = [
-            SELECT Product2Id, Quantity 
-            FROM OrderItemSummary 
-            WHERE OrderSummaryId = :orderSummaryId 
-            AND Product2Id != null 
-            AND Type != 'Delivery Charge'
-            AND OriginalOrderItem.ParentOrderItemId = null
-        ];
-
+        List<OrderItemSummary> orderItems = [SELECT Product2Id, Quantity FROM OrderItemSummary WHERE OrderSummaryId = :orderSummaryId AND Product2Id != null AND Type != 'Delivery Charge' AND OriginalOrderItem.ParentOrderItemId = null];
         if (orderItems.isEmpty()) return responseMap;
 
         Set<String> validProductIds = new Set<String>();
         List<Map<String, Object>> quantitiesList = new List<Map<String, Object>>();
-        
-        for (OrderItemSummary oi : orderItems) {
-            validProductIds.add(oi.Product2Id);
-            quantitiesList.add(new Map<String, Object>{ 'productId' => oi.Product2Id, 'quantity' => oi.Quantity });
-        }
+        for (OrderItemSummary oi : orderItems) { validProductIds.add(oi.Product2Id); quantitiesList.add(new Map<String, Object>{ 'productId' => oi.Product2Id, 'quantity' => oi.Quantity }); }
         responseMap.put('orderQuantities', quantitiesList);
 
         if (skipEnrichment == true) return responseMap; 
 
         List<Product2> dbProducts = [SELECT Id, StockKeepingUnit FROM Product2 WHERE Id IN :validProductIds];
         List<String> skusToSearch = new List<String>();
-        for(Product2 p : dbProducts) {
-            if(String.isNotBlank(p.StockKeepingUnit) && p.StockKeepingUnit != '999999') {
-                skusToSearch.add(p.StockKeepingUnit);
-            }
-        }
+        for(Product2 p : dbProducts) { if(String.isNotBlank(p.StockKeepingUnit) && p.StockKeepingUnit != '999999') skusToSearch.add(p.StockKeepingUnit); }
 
         Map<String, ConnectApi.ProductSummary> summaryMap = new Map<String, ConnectApi.ProductSummary>();
         if(!skusToSearch.isEmpty()) {
             try {
                 ConnectApi.ProductSearchInput input = new ConnectApi.ProductSearchInput();
-                input.searchTerm = String.join(skusToSearch, ' '); 
-                input.pageSize = 100;
-                input.includeQuantityRule = true;
-                input.fields = new List<String>{'StockKeepingUnit', 'Description'};
-                
+                input.searchTerm = String.join(skusToSearch, ' '); input.pageSize = 100; input.includeQuantityRule = true; input.fields = new List<String>{'StockKeepingUnit', 'Description'};
                 ConnectApi.ProductSearchResults results = ConnectApi.CommerceSearch.searchProducts(webstoreId, accountId, input);
-                if (results?.productsPage?.products != null) {
-                    for (ConnectApi.ProductSummary ps : results.productsPage.products) {
-                        if (validProductIds.contains(ps.id)) {
-                            summaryMap.put(ps.id, ps);
-                        }
-                    }
-                }
+                if (results?.productsPage?.products != null) { for (ConnectApi.ProductSummary ps : results.productsPage.products) { if (validProductIds.contains(ps.id)) summaryMap.put(ps.id, ps); } }
             } catch(Exception e) {}
         }
-
         Map<String, Object> builtData = buildResponseFromSummaries(summaryMap.values(), webstoreId, accountId);
         responseMap.put('products', builtData.get('products'));
         return responseMap;
     }
 
-    // --- HELPER (INCHANGÉ) ---
+    // --- HELPER PRINCIPAL (SCANNER DYNAMIQUE INTÉGRÉ) ---
     private static Map<String, Object> buildResponseFromSummaries(List<ConnectApi.ProductSummary> summaries, String webstoreId, String accountId) {
         Map<String, Object> responseMap = new Map<String, Object>();
         if (summaries == null || summaries.isEmpty()) {
@@ -200,15 +147,23 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
 
         Set<String> skus = new Set<String>();
+        Set<String> variationProductIds = new Set<String>();
+
         for(ConnectApi.ProductSummary ps : summaries) {
             String sku = null;
             if (ps.fields != null && ps.fields.containsKey('StockKeepingUnit')) {
                 sku = (String) ps.fields.get('StockKeepingUnit').value;
             }
             if(String.isNotBlank(sku)) skus.add(sku);
+
+            if (ps.productClass == ConnectApi.ProductClass.Variation) {
+                variationProductIds.add(ps.id);
+            }
         }
         
         Map<String, String> ociStockMap = getOCIStockMap(webstoreId, skus);
+        Map<String, String> variationAttributesMap = getVariationInfoMapDynamic(variationProductIds);
+
         List<Map<String, Object>> resultList = new List<Map<String, Object>>();
 
         for (ConnectApi.ProductSummary ps : summaries) {
@@ -231,6 +186,8 @@ public without sharing class B2BCommerceOrderMatrixController {
             }
             d.put('sku', sku);
             d.put('Description', description);
+            
+            d.put('variationInfo', variationAttributesMap.containsKey(ps.id) ? variationAttributesMap.get(ps.id) : '');
 
             d.put('unitPrice', 0); d.put('listPrice', 0); d.put('currencyCode', 'USD'); d.put('priceRanges', new List<Map<String, Object>>());
             d.put('stock', (String.isNotBlank(sku) && ociStockMap.containsKey(sku)) ? ociStockMap.get(sku) : null);
@@ -262,7 +219,56 @@ public without sharing class B2BCommerceOrderMatrixController {
         return responseMap;
     }
 
-    // --- 4. CART & HELPERS (INCHANGÉ) ---
+    // --- SCANNER DYNAMIQUE CORRIGÉ ---
+    // Exclut maintenant les champs "External ID" même s'ils sont Custom
+    private static Map<String, String> getVariationInfoMapDynamic(Set<String> productIds) {
+        Map<String, String> results = new Map<String, String>();
+        if (productIds.isEmpty()) return results;
+        
+        Map<String, Schema.SObjectField> fieldMap = Schema.SObjectType.ProductAttribute.fields.getMap();
+        List<String> variationFields = new List<String>();
+        
+        for (String fieldName : fieldMap.keySet()) {
+            Schema.DescribeFieldResult dfr = fieldMap.get(fieldName).getDescribe();
+            
+            // On ne prend que les champs Custom (__c)
+            if (dfr.isCustom()) {
+                String label = dfr.getLabel();
+                // FIX : Si le label contient "External ID", on l'ignore (champ technique)
+                if (!label.containsIgnoreCase('External ID')) {
+                    variationFields.add(dfr.getName());
+                }
+            }
+        }
+        
+        if (variationFields.isEmpty()) return results;
+        
+        String query = 'SELECT ProductId, ' + String.join(variationFields, ', ') + ' FROM ProductAttribute WHERE ProductId IN :productIds';
+        
+        try {
+            List<SObject> attributes = Database.query(query);
+            for (SObject attr : attributes) {
+                String pId = (String) attr.get('ProductId');
+                List<String> activeVars = new List<String>();
+                for (String field : variationFields) {
+                    try {
+                        Object val = attr.get(field);
+                        if (val != null) {
+                            String label = fieldMap.get(field).getDescribe().getLabel();
+                            // Double sécurité
+                            if (!label.containsIgnoreCase('External ID')) {
+                                activeVars.add(label + ': ' + String.valueOf(val));
+                            }
+                        }
+                    } catch(Exception ex) {}
+                }
+                if (!activeVars.isEmpty()) results.put(pId, String.join(activeVars, ', '));
+            }
+        } catch (Exception e) {}
+        return results;
+    }
+    
+    // ... (Helpers Cart/OCI INCHANGÉS) ...
     @AuraEnabled
     public static void addItemsToCart(String communityId, String effectiveAccountId, Map<String, Double> itemsMap) {
         String webstoreId = resolveWebstoreId(communityId);
@@ -315,13 +321,11 @@ public without sharing class B2BCommerceOrderMatrixController {
         } catch(Exception e) {}
         return stockMap;
     }
-
     private static String getCatalogId(String webstoreId) {
         List<SObject> links = Database.query('SELECT ProductCatalogId FROM WebStoreCatalog WHERE SalesStoreId = :webstoreId LIMIT 1');
         if (links.isEmpty()) links = Database.query('SELECT ProductCatalogId FROM WebStoreCatalog WHERE WebStoreId = :webstoreId LIMIT 1');
         return links.isEmpty() ? null : (String) links[0].get('ProductCatalogId');
     }
-
     private static Map<String, String> resolveOCISource(String webstoreId) {
         Map<String, String> res = new Map<String, String>{ 'IsEnabled' => 'false' };
         List<WebStoreInventorySource> sources = [SELECT IsEnabled, LocationSourceId, LocationSource.Type FROM WebStoreInventorySource WHERE WebStoreId = :webstoreId LIMIT 1];
@@ -335,7 +339,6 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
         return res;
     }
-
     private static String resolveWebstoreId(String communityId) {
         try {
             List<WebStoreNetwork> wsn = [SELECT WebStoreId FROM WebStoreNetwork WHERE NetworkId = :communityId LIMIT 1];
@@ -347,7 +350,8 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
         return null;
     }
-    
+    // ...
+
     // --- 5. EINSTEIN AI CHAT ---
     @AuraEnabled
     public static Map<String, Object> askEinstein(String userMessage, String productContextString) {
@@ -356,62 +360,57 @@ public without sharing class B2BCommerceOrderMatrixController {
         try {
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            // --- DÉBUT DU PROMPT MODIFIÉ ---
-            String prompt = 'You are a friendly and helpful B2B Sales Assistant.\n';
-            prompt += 'You are having a natural conversation with a customer in a "Quick Order" interface.\n';
-            prompt += 'You have access to the CATALOG DATA below (JSON).\n\n';
+            String prompt = 'You are a friendly B2B Sales Assistant.\n';
+            prompt += 'You have access to CATALOG DATA (JSON).\n\n';
             
-            // ... (Section DATA STRUCTURE inchangée) ...
-            prompt += '### CATALOG DATA STRUCTURE EXPLAINED:\n';
-            prompt += '- "sku": Product Identifier.\n';
-            prompt += '- "stock": Available inventory (Number or "Unlimited").\n';
-            prompt += '- "inCart": Quantity ALREADY in cart.\n';
-            prompt += '- "selected": Quantity CURRENTLY selected.\n';
-            prompt += '- "min": Minimum purchase quantity.\n';
-            prompt += '- "inc": Quantity increment step.\n\n';
-            
-            prompt += '### CATALOG DATA:\n';
-            prompt += productContextString + '\n\n';
+            prompt += '### DATA:\n' + productContextString + '\n\n';
             
             prompt += '### INSTRUCTIONS:\n';
-            prompt += '1. Analyze HISTORY and USER QUERY.\n';
             
-            // --- NOUVELLE INSTRUCTION DE STYLE (PROLIXE & NATUREL) ---
-            prompt += '2. TONE & STYLE (IMPORTANT):\n';
-            prompt += '   - Speak naturally, like a human sales assistant, not a robot.\n';
-            prompt += '   - Be a bit more verbose/prolix: Explain what you are doing.\n';
-            prompt += '   - If you add products, confirm the exact quantity and name nicely.\n';
-            prompt += '   - If you remove products, confirm clearly.\n';
+            // 1. VISUAL CARDS
+            prompt += '1. VISUAL CARDS (VERY IMPORTANT):\n';
+            prompt += '   - If you recommend or discuss specific products, YOU MUST include them in the "items" array in the JSON.\n';
+            prompt += '   - Use action="search" for recommendations.\n';
+            prompt += '   - This will automatically display a visual card with image, price, and specs.\n';
+            
+            // 2. TEXTE
+            prompt += '2. TEXT MESSAGE:\n';
+            prompt += '   - Keep the text SHORT and CLEAN.\n';
+            prompt += '   - DO NOT list prices, stock, or technical specs in the text (the user sees them on the cards).\n';
+            prompt += '   - Just give a friendly summary: "Here are the models I found for you..."\n';
+            prompt += '   - Mention differences briefly (e.g., "I have it in Blue and Red") but let the cards show details.\n';
             prompt += '   - Use the USER\'S LANGUAGE (e.g. French, English).\n';
-            // -----------------------------------------------------------
-            
-            prompt += '3. INVENTORY & RULES:\n';
-            prompt += '   - If "stock" is a NUMBER, it is a hard limit.\n';
-            prompt += '   - If "stock" is "Unlimited", ignore limits.\n';
-            prompt += '   - SPECIAL "ADD ALL": If stock is Number, Qty = stock - (selected + inCart). If Unlimited, ASK user.\n';
-            
-            // --- CORRECTION MAJEURE ICI : GESTION "REMOVE ALL" ---
-            prompt += '4. REMOVE RULES (CRITICAL):\n';
-            prompt += '   - Intent is "REMOVE" if user says "Remove", "Delete", "Take out", "Less", "Enlever", "Supprimer".\n';
-            prompt += '   - "REMOVE ALL" / "TOUT ENLEVER":\n';
-            prompt += '     1. Check "selected" value. If selected > 0, set quantity = selected.\n';
-            prompt += '     2. If selected is 0, check "inCart". If inCart > 0, set quantity = inCart.\n';
-            prompt += '     3. DO NOT default to 1 if user asks for "ALL". You must find the total number.\n';
-            prompt += '   - "REMOVE SPECIFIC": If user says "Remove 5", set quantity to 5.\n';
-            // ----------------------------------------------------
 
-            prompt += '4. RETURN JSON ONLY:\n';
+            // 3. ACTIONS & INTENTS (CORRIGÉ & ROBUSTE)
+            prompt += '3. ACTIONS & INTENTS (CRITICAL RULES):\n';
+            
+            prompt += '   - CASE 1: "ADD" (Relative)\n';
+            prompt += '     User says: "Add 5", "Plus 5", "Put 5 more".\n';
+            prompt += '     -> OUTPUT: action="add", quantity=5.\n';
+            
+            prompt += '   - CASE 2: "REMOVE" (Relative)\n';
+            prompt += '     User says: "Remove 2", "Delete 2", "Less 5".\n';
+            prompt += '     -> OUTPUT: action="remove", quantity=2.\n';
+
+            prompt += '   - CASE 3: "SET / TARGET" (Absolute) - PRIORITY\n';
+            prompt += '     User says: "I want 10", "Actually 10", "Just 10", "Only 10", "Set to 5".\n';
+            prompt += '     -> OUTPUT: action="set", quantity=10.\n';
+            prompt += '     (NEVER use "add" for these phrases. "I want 10" means the result is 10, not +10).\n';
+
+            prompt += '   - CASE 4: "REMOVE ALL"\n';
+            prompt += '     -> OUTPUT: action="set", quantity=0.\n';
+
+            prompt += '4. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
-            prompt += '     "message": "A natural, friendly and detailed confirmation message in user language", \n';
+            prompt += '     "message": "Short text summary", \n';
             prompt += '     "items": [ \n';
-            prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "search" } \n';
+            prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "set" OR "search" } \n';
             prompt += '     ] \n';
             prompt += '   }\n\n';
             
-            prompt += '### HISTORY/QUERY:\n' + userMessage;
+            prompt += '### USER SAYS:\n' + userMessage;
             
             generationsInput.promptTextorId = prompt;
-            
             generationsInput.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
             generationsInput.additionalConfig.maxTokens = 800;
             generationsInput.additionalConfig.temperature = 0.5; 

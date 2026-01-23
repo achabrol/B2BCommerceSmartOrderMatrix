@@ -3,7 +3,6 @@ import askEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.askEi
 
 export default class B2bAiAssistant extends LightningElement {
     
-    // Reçoit la liste enrichie (avec promos, prix calculés) du parent
     @api products = [];
 
     @track messages = [
@@ -18,7 +17,6 @@ export default class B2bAiAssistant extends LightningElement {
     @track userInput = '';
     @track isTyping = false;
     
-    // Mémoire de la conversation
     conversationContext = ''; 
 
     handleInputChange(event) { this.userInput = event.target.value; }
@@ -28,8 +26,6 @@ export default class B2bAiAssistant extends LightningElement {
         if (!this.userInput.trim()) return;
 
         const text = this.userInput;
-        
-        // 1. Affiche le message utilisateur
         this.addMessage(text, false);
         this.conversationContext += `\nUser: ${text}`;
         
@@ -37,54 +33,39 @@ export default class B2bAiAssistant extends LightningElement {
         this.isTyping = true;
         this.scrollToBottom();
 
-        // =================================================================
-        // 2. PRÉPARATION DU CONTEXTE (Mapping complet pour l'IA)
-        // =================================================================
         const contextData = this.products.map(p => {
-            // Gestion des prix dégressifs (Tiers)
             let tierInfo = '';
             if (p.tierList && p.tierList.length > 0) {
                 tierInfo = p.tierList.map(t => t.label).join(', ');
             }
             
-            // LOGIQUE DE PRIX (Promo vs Standard)
-            // displayUnitPrice = Prix final payé (rouge si promo)
-            // unitPrice = Prix de base système
             const sellingPrice = p.displayUnitPrice || p.unitPrice; 
-            
-            // On cherche le prix barré
             let standardPrice = p.displayListPrice;
-            
-            // Si pas de prix barré explicite mais que le prix de vente est inférieur au prix unitaire,
-            // alors le prix unitaire devient la référence barrée.
             if (!standardPrice && sellingPrice !== p.unitPrice) {
                 standardPrice = p.unitPrice;
             }
 
-            // GESTION DU STOCK (Nombre ou "Unlimited")
-            // Si p.stock existe (nombre ou string non vide), on le garde.
-            // Sinon (null/undefined), on dit que c'est "Unlimited" pour ne pas bloquer l'IA.
             let stockVal = 'Unlimited';
             if (p.stock !== undefined && p.stock !== null && p.stock !== '') {
                  stockVal = p.stock;
             }
 
+            // Description enrichie pour l'IA
+            let enrichedDesc = p.Description || '';
+            if (p.variationInfo) {
+                enrichedDesc += ` (${p.variationInfo})`;
+            }
+
             return {
                 name: p.name,
                 sku: p.sku || p.StockKeepingUnit, 
-                desc: p.Description || '',
-                
-                // --- PRIX ---
-                price: sellingPrice,       // Prix actuel (pour l'IA)
-                listPrice: standardPrice,  // Prix d'origine (pour comparaison IA)
-                promo: p.promoName || '',  // Texte promo (ex: "10% OFF")
-                
-                // --- STOCK & QUANTITÉS ---
-                stock: stockVal,             // Niveau de stock ou Unlimited
-                selected: p.qtyValue || 0,   // Quantité actuellement saisie dans la grille
-                inCart: p.cartQty || 0,      // Quantité déjà dans le panier backend
-
-                // --- RÈGLES ---
+                desc: enrichedDesc, 
+                price: sellingPrice,       
+                listPrice: standardPrice,  
+                promo: p.promoName || '',  
+                stock: stockVal,             
+                selected: p.qtyValue || 0,   
+                inCart: p.cartQty || 0,      
                 min: p.minQty || 1,
                 max: p.maxQty || '',
                 inc: p.increment || 1,
@@ -93,12 +74,8 @@ export default class B2bAiAssistant extends LightningElement {
         });
 
         const contextString = JSON.stringify(contextData); 
-        
-        // 🔍 DEBUG : Voir ce qui est envoyé à l'IA
-        console.log('🔥 [AI DEBUG] Full Context Sent to Einstein:', JSON.parse(contextString));
 
         try {
-            // 3. APPEL APEX
             const result = await askEinstein({ 
                 userMessage: this.conversationContext,
                 productContextString: contextString
@@ -108,40 +85,43 @@ export default class B2bAiAssistant extends LightningElement {
 
             if (result.success) {
                 try {
-                    // 4. TRAITEMENT RÉPONSE JSON
                     const aiData = JSON.parse(result.response);
-                    
-                    // Ajout à l'historique
                     this.conversationContext += `\nAssistant: ${aiData.message}`;
 
                     let productsToDisplay = [];
                     
-                    // Gestion des items retournés (Multi-add / Remove / Search)
                     if (aiData.items && Array.isArray(aiData.items)) {
                         aiData.items.forEach(item => {
-                            // Retrouver le produit localement
                             const foundProduct = this.products.find(p => 
                                 (p.sku === item.sku) || (p.StockKeepingUnit === item.sku)
                             );
 
                             if (foundProduct) {
-                                // GESTION DES ACTIONS (ADD / REMOVE)
-                                if (item.action === 'add' || item.action === 'remove') {
-                                    
-                                    // a. Récupération quantité brute (absolue)
-                                    let qtyRaw = item.quantity ? parseInt(item.quantity, 10) : 1;
-                                    
-                                    // b. Si c'est un AJOUT, on respecte le minimum
-                                    if (item.action === 'add') {
-                                        const min = foundProduct.minQty || 1;
-                                        if (qtyRaw < min) qtyRaw = min;
-                                    }
+                                let finalQty = 0;
+                                let qtyRaw = item.quantity ? parseInt(item.quantity, 10) : 0;
 
-                                    // c. Si c'est un RETRAIT, on inverse le signe
-                                    // (Le parent fera : QuantitéActuelle + (-qtyRaw))
-                                    let finalQty = (item.action === 'remove') ? -qtyRaw : qtyRaw;
+                                console.log(`🤖 Action IA pour ${item.sku}: ${item.action} (Qté: ${qtyRaw})`);
 
-                                    // d. Déclenchement de l'événement
+                                if (item.action === 'set') {
+                                    // --- CORRECTION ICI ---
+                                    // Le produit brut (foundProduct) a sa quantité dans 'qtyValue', pas 'selected'.
+                                    // 'selected' n'existe que dans le JSON envoyé à l'IA, pas dans l'objet source.
+                                    const currentSelected = foundProduct.qtyValue ? parseFloat(foundProduct.qtyValue) : 0;
+                                    
+                                    // Calcul du Delta : Cible - Actuel
+                                    finalQty = qtyRaw - currentSelected;
+                                    
+                                    console.log(`   -> Mode SET: Actuel=${currentSelected}, Cible=${qtyRaw} => Delta=${finalQty}`);
+                                } 
+                                else if (item.action === 'remove') {
+                                    finalQty = -qtyRaw;
+                                }
+                                else {
+                                    // Default add/search
+                                    finalQty = qtyRaw;
+                                }
+
+                                if (finalQty !== 0) {
                                     this.dispatchEvent(new CustomEvent('addproduct', {
                                         detail: { 
                                             sku: foundProduct.sku || foundProduct.StockKeepingUnit, 
@@ -149,19 +129,14 @@ export default class B2bAiAssistant extends LightningElement {
                                         }
                                     }));
                                 }
-                                
-                                // On prépare le produit pour l'affichage de la carte
                                 productsToDisplay.push(foundProduct);
                             }
                         });
                     }
-
-                    // Affiche le message de l'IA + les cartes produits
                     this.addMessage(aiData.message, true, productsToDisplay);
 
                 } catch (jsonError) {
                     console.error('JSON Parse Error:', jsonError);
-                    // Fallback si l'IA répond en texte brut
                     this.addMessage(result.response, true);
                     this.conversationContext += `\nAssistant: ${result.response}`;
                 }
@@ -179,7 +154,6 @@ export default class B2bAiAssistant extends LightningElement {
         this.scrollToBottom();
     }
 
-    // Helper pour construire l'objet message affiché dans le HTML
     addMessage(text, isAi, products = null) {
         let productCards = [];
         
@@ -187,11 +161,16 @@ export default class B2bAiAssistant extends LightningElement {
             const list = Array.isArray(products) ? products : [products];
             
             productCards = list.map(p => {
-                // Même logique de prix pour l'affichage de la carte
                 const sellingPrice = p.displayUnitPrice || p.unitPrice;
                 let standardPrice = p.displayListPrice;
                 if (!standardPrice && sellingPrice !== p.unitPrice) {
                     standardPrice = p.unitPrice;
+                }
+
+                // Transformation de "Color: Blue, Size: M" en tableau ["Color: Blue", "Size: M"]
+                let specsArray = [];
+                if (p.variationInfo) {
+                    specsArray = p.variationInfo.split(', '); 
                 }
 
                 return {
@@ -201,8 +180,9 @@ export default class B2bAiAssistant extends LightningElement {
                     price: sellingPrice,
                     imgUrl: p.imgUrl,
                     promo: p.promoName,
-                    listPrice: standardPrice, // Prix barré
-                    currency: p.currencyCode || 'USD'
+                    listPrice: standardPrice, 
+                    currency: p.currencyCode || 'USD',
+                    specs: specsArray 
                 };
             });
         }
@@ -224,7 +204,6 @@ export default class B2bAiAssistant extends LightningElement {
         }, 50);
     }
 
-    // Clic manuel sur le bouton "Add +1" dans le chat
     handleAddRequest(event) {
         const sku = event.target.dataset.sku;
         const qty = parseInt(event.target.dataset.qty, 10);

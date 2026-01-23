@@ -135,8 +135,29 @@
    PARTIE DROITE (CHAT)
    ========================================================================== */
 .right-ai-panel {
-    width: 320px; /* REDUCTION DE LA LARGEUR (360 -> 320) */
+    width: 320px; 
     flex-shrink: 0;
     height: 100%; 
     background: #fff;
 }
+
+/* --- AJOUT : STYLES DES VARIATIONS (MAIN GRID) --- */
+.specs-container-main {
+    display: flex;
+    flex-wrap: wrap; /* Les uns à côté des autres */
+    gap: 4px;
+    margin-bottom: 4px; /* Petit espace avant le SKU ou la Promo */
+    margin-top: 2px;
+}
+
+.spec-pill {
+    font-size: 0.65rem; /* Même taille que les Tiers */
+    color: #014486;     /* Bleu foncé */
+    font-weight: 600;
+    background-color: #f3f9ff; /* Fond bleu très clair */
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid #cce4f7; /* Bordure subtile */
+    white-space: nowrap;
+}
+/* ------------------------------------------------- */

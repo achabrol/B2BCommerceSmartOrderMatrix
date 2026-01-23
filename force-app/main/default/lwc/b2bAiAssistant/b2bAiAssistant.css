@@ -46,6 +46,27 @@
 .card-details { padding: 8px; }
 .card-title { font-weight: 700; font-size: 0.85rem; color: #080707; line-height: 1.2; margin-bottom: 2px;}
 .card-sku { font-size: 0.7rem; color: #706e6b; margin-bottom: 4px; }
+
+/* --- STYLES SPECS (VARIATIONS) --- */
+.specs-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+    align-items: flex-start;
+}
+.card-spec-item {
+    font-size: 0.7rem;
+    color: #014486;
+    font-weight: 600;
+    background-color: #f3f9ff;
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: inline-block;
+    border: 1px solid #cce4f7;
+}
+/* -------------------------------- */
+
 .card-price { font-weight: 700; color: #04844b; font-size: 0.9rem;}
 .card-actions { padding: 8px; border-top: 1px solid #f2f2f2; background: #fafafa; }
 .add-btn { width: 100%; background-color: #ba0517; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.8rem; transition: background 0.2s; }
@@ -78,7 +99,6 @@
 }
 .send-btn:hover { background: #8e030f; transform: scale(1.05); }
 
-/* --- ICONE BLANCHE --- */
 .icon-white {
     --sds-c-icon-color-foreground-default: #ffffff;
     --sds-c-icon-color-foreground: #ffffff;

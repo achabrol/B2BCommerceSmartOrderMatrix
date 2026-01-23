@@ -81,6 +81,16 @@
                                                         {prod.name}
                                                     </a>
                                                 </div>
+
+                                                <template if:true={prod.specsList}>
+                                                    <div class="specs-container-main">
+                                                        <template for:each={prod.specsList} for:item="spec">
+                                                            <span key={spec.key} class={spec.cssClass}>
+                                                                {spec.label}
+                                                            </span>
+                                                        </template>
+                                                    </div>
+                                                </template>
                                                 <template if:true={prod.promoName}>
                                                     <div class="promo-badge">{prod.promoName}</div>
                                                 </template>

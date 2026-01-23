@@ -122,9 +122,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         try {
             const result = await getAllActiveProducts({ communityId: communityId, effectiveAccountId: this.effectiveAccountId });
             
-            // ====================================================
-            // 🔍 DEBUG : AFFICHAGE DANS LA CONSOLE CHROME
-            // ====================================================
             console.log('🔥 [APEX] Retour complet de getAllActiveProducts :', result);
 
             if (result.error) { 
@@ -132,15 +129,10 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                 console.error('❌ Erreur retournée par Apex :', result.error);
             } 
             else {
-                // TRI ALPHABÉTIQUE
                 const unsortedProducts = result.products || [];
                 
-                // 🔍 DEBUG : Regardons le premier produit pour voir les champs
                 if (unsortedProducts.length > 0) {
                     console.log('📦 [PRODUIT 1] Structure brute :', unsortedProducts[0]);
-                    
-                    // Astuce : Affiche les clés (noms des champs) du premier produit
-                    // C'est ici que vous verrez vos champs custom (ex: "Brand__c")
                     console.log('🔑 [CHAMPS DISPOS] :', Object.keys(unsortedProducts[0]));
                 } else {
                     console.warn('⚠️ Aucun produit trouvé dans le catalogue.');
@@ -254,6 +246,16 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             const priceCalc = this.calculateFinalPrice(prod, (currentInputVal || 1) + inCart, promoData.price);
             const finalLimit = Math.min(Math.max(0, max - inCart), Math.max(0, physicalStock - inCart));
 
+            // --- AJOUT : PRÉPARATION DES VARIATIONS POUR L'AFFICHAGE ---
+            let specsList = null;
+            if (prod.variationInfo) {
+                // On transforme "Color: Blue, Size: M" en tableau pour la boucle template
+                specsList = prod.variationInfo.split(', ').map(spec => {
+                    return { key: spec, label: spec, cssClass: 'spec-pill' };
+                });
+            }
+            // -----------------------------------------------------------
+
             return {
                 ...prod, 
                 id: pId,
@@ -271,17 +273,17 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                 stockClass: stockState.cssClass,
                 tierList: this.generateDynamicTiers(prod, (currentInputVal || 1) + inCart, promoData.price),
                 ruleList: this.generateRuleItems({ minQty: min, maxQty: max, increment: inc }, currentInputVal, inCart),
+                specsList: specsList, // <--- On passe la liste des specs au template
                 inputClass: hasError ? 'qty-input-field has-error' : 'qty-input-field',
                 productUrl: `/product/${pId}`
             };
         });
     }
 
-    // --- ECOUTE EVENEMENT CHAT IA ---
+   // --- ECOUTE EVENEMENT CHAT IA ---
     handleAiAddProduct(event) {
         const { sku, quantity } = event.detail;
         
-        // Recherche insensible à la casse
         const productFound = this.rawProductData.find(p => 
             (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
         );
@@ -289,10 +291,21 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         if (productFound) {
             const pId = productFound.id;
             const currentQty = parseFloat(this.inputQty[pId] || 0);
-            const newQty = currentQty + quantity;
-            this.inputQty[pId] = String(newQty);
-            this.buildGrid();
-            this.showToast('Product Added', `Added +${quantity} ${productFound.name} from Assistant.`, 'success');
+            
+            const rawNewQty = currentQty + quantity;
+            const newQty = Math.max(0, rawNewQty); 
+
+            if (newQty === 0) {
+                delete this.inputQty[pId];
+            } else {
+                this.inputQty[pId] = String(newQty);
+            }
+
+            this.buildGrid(); 
+            
+            if (quantity !== 0) {
+                this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
+            }
         } else {
             this.showToast('Warning', `Product with SKU ${sku} is not in the current list view.`, 'warning');
         }

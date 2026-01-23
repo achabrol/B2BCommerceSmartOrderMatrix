@@ -25,6 +25,16 @@
                                         <div class="card-title">{pCard.name}</div>
                                         <div class="card-sku">SKU: {pCard.sku}</div>
                                         
+                                        <template if:true={pCard.specs}>
+                                            <div class="specs-container">
+                                                <template for:each={pCard.specs} for:item="spec">
+                                                    <div key={spec} class="card-spec-item">
+                                                        {spec}
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </template>
+                                        
                                         <div class="card-price-container">
                                             <template if:true={pCard.listPrice}>
                                                 <span class="list-price" style="text-decoration: line-through; color: #747474; font-size: 0.85em; margin-right: 6px;">
