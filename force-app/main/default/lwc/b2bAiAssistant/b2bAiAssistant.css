@@ -33,44 +33,140 @@
 .message-wrapper.right { justify-content: flex-end; }
 .message-wrapper.left { justify-content: flex-start; }
 
-.chat-bubble { max-width: 85%; padding: 10px 14px; border-radius: 16px; font-size: 0.85rem; line-height: 1.4; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.chat-bubble { max-width: 90%; padding: 10px 14px; border-radius: 16px; font-size: 0.85rem; line-height: 1.4; position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
 .chat-bubble.left { background-color: #ffffff; color: #181818; border-bottom-left-radius: 4px; }
 .chat-bubble.right { background-color: #ba0517; color: white; border-bottom-right-radius: 4px; }
 
 .avatar-icon { width: 24px; height: 24px; background: #e0e0e0; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
-/* CARTES PRODUIT */
-.product-card { margin-top: 10px; background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; overflow: hidden; }
-.card-image { height: 100px; width: 100%; background: #f9f9f9; display: flex; align-items: center; justify-content: center; }
-.card-image img { max-height: 90%; max-width: 90%; object-fit: contain; }
-.card-details { padding: 8px; }
-.card-title { font-weight: 700; font-size: 0.85rem; color: #080707; line-height: 1.2; margin-bottom: 2px;}
-.card-sku { font-size: 0.7rem; color: #706e6b; margin-bottom: 4px; }
+/* =========================================================
+   STYLE CARTE "LISTE COMPACTE" (Correction Layout)
+   ========================================================= */
 
-/* --- STYLES SPECS (VARIATIONS) --- */
-.specs-container {
+.product-card { 
+    margin-top: 8px; 
+    background: #fff; 
+    border: 1px solid #e5e5e5; 
+    border-radius: 6px; 
+    
+    /* Layout Horizontal Strict */
+    display: flex;          
+    flex-direction: row;    
+    flex-wrap: nowrap;      /* Interdit le retour à la ligne */
+    align-items: stretch;   /* Hauteurs égales */
+    
+    padding: 8px;
+    gap: 10px;
+    overflow: hidden;       /* Sécurité */
+}
+
+/* --- GAUCHE : IMAGE FIXE --- */
+.card-left {
+    flex: 0 0 70px; /* Largeur fixe 70px, ne rétrécit pas, ne grandit pas */
+    width: 70px;
+    display: flex;
+    align-items: flex-start; /* Aligné en haut */
+}
+
+.card-image-box { 
+    height: 70px; 
+    width: 70px; 
+    background: #fff; 
+    display: flex; 
+    align-items: center; 
+    justify-content: center; 
+    border-radius: 4px;
+    border: 1px solid #f0f0f0;
+}
+.card-image-box img { 
+    max-height: 90%; 
+    max-width: 90%; 
+    object-fit: contain; 
+}
+
+/* --- DROITE : CONTENU FLUIDE --- */
+.card-right {
+    flex: 1 1 auto;  /* Prend tout l'espace restant */
+    min-width: 0;    /* CRUCIAL : Permet au texte de se couper (ellipsis) au lieu de pousser le conteneur */
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin-bottom: 8px;
-    align-items: flex-start;
+    justify-content: space-between; /* Espace le contenu du footer */
 }
-.card-spec-item {
-    font-size: 0.7rem;
+
+/* INFO HAUT */
+.card-title { 
+    font-weight: 700; 
+    font-size: 0.8rem; 
+    color: #080707; 
+    line-height: 1.1; 
+    margin-bottom: 2px;
+    
+    /* Coupe le texte s'il est trop long */
+    white-space: nowrap; 
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.card-sku { 
+    font-size: 0.65rem; 
+    color: #706e6b; 
+    margin-bottom: 4px; 
+}
+
+/* PILLS (Specs) */
+.specs-container {
+    display: flex;
+    flex-wrap: wrap; /* Les tags peuvent passer à la ligne SI besoin, mais restent à droite */
+    gap: 4px;
+    margin-bottom: 6px;
+}
+.card-spec-pill {
+    font-size: 0.65rem;
     color: #014486;
     font-weight: 600;
     background-color: #f3f9ff;
-    padding: 2px 6px;
-    border-radius: 4px;
-    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
     border: 1px solid #cce4f7;
+    white-space: nowrap;
 }
-/* -------------------------------- */
 
-.card-price { font-weight: 700; color: #04844b; font-size: 0.9rem;}
-.card-actions { padding: 8px; border-top: 1px solid #f2f2f2; background: #fafafa; }
-.add-btn { width: 100%; background-color: #ba0517; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 0.8rem; transition: background 0.2s; }
-.add-btn:hover { background-color: #8e030f; }
+/* FOOTER BAS (Prix & Bouton alignés) */
+.card-compact-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end; /* Aligne le bas du prix avec le bas du bouton */
+    margin-top: 2px;
+}
+
+.price-wrapper {
+    display: flex;
+    flex-direction: column;
+    line-height: 1;
+}
+
+.list-price { text-decoration: line-through; color: #747474; font-size: 0.65rem; }
+.current-price { font-weight: 700; color: #080707; font-size: 0.85rem; }
+.promo-text { color: #ba0517; font-weight: 700; font-size: 0.6rem; margin-top: 1px; }
+
+/* Bouton Mini */
+.add-btn-mini { 
+    background-color: #ba0517; 
+    color: white; 
+    border: none; 
+    padding: 2px 10px; 
+    border-radius: 4px; 
+    cursor: pointer; 
+    font-weight: 600; 
+    font-size: 0.7rem; 
+    transition: background 0.2s;
+    height: 24px;
+    white-space: nowrap;
+    line-height: 1;
+}
+.add-btn-mini:hover { background-color: #8e030f; }
+
+/* ========================================================= */
 
 /* FOOTER */
 .chat-input-area {
@@ -90,7 +186,6 @@
 
 .custom-input { flex-grow: 1; border: none; background: transparent; padding: 4px 0; font-size: 0.9rem; outline: none; }
 
-/* BOUTON ENVOYER */
 .send-btn { 
     background: #ba0517; 
     border: none; width: 32px; height: 32px; border-radius: 50%; 
@@ -107,7 +202,6 @@
 
 .legal-text { text-align: center; font-size: 0.65rem; color: #706e6b; margin-top: 4px; }
 
-/* TYPING */
 .typing { padding: 12px 16px !important; display: flex; align-items: center; gap: 4px; }
 .dot { width: 6px; height: 6px; background: #b0b0b0; border-radius: 50%; animation: bounce 1.4s infinite ease-in-out both; }
 .dot:nth-child(1) { animation-delay: -0.32s; }

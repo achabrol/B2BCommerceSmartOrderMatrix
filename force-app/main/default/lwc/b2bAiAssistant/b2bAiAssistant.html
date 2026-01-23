@@ -20,40 +20,50 @@
                         <template if:true={msg.products}>
                             <template for:each={msg.products} for:item="pCard">
                                 <div key={pCard.id} class="product-card">
-                                    <div class="card-image"><img src={pCard.imgUrl} alt={pCard.name}/></div>
-                                    <div class="card-details">
-                                        <div class="card-title">{pCard.name}</div>
-                                        <div class="card-sku">SKU: {pCard.sku}</div>
+                                    
+                                    <div class="card-left">
+                                        <div class="card-image-box">
+                                            <img src={pCard.imgUrl} alt={pCard.name}/>
+                                        </div>
+                                    </div>
+
+                                    <div class="card-right">
+                                        <div class="card-header-info">
+                                            <div class="card-title">{pCard.name}</div>
+                                            <div class="card-sku">SKU: {pCard.sku}</div>
+                                        </div>
                                         
                                         <template if:true={pCard.specs}>
                                             <div class="specs-container">
                                                 <template for:each={pCard.specs} for:item="spec">
-                                                    <div key={spec} class="card-spec-item">
+                                                    <span key={spec} class="card-spec-pill">
                                                         {spec}
-                                                    </div>
+                                                    </span>
                                                 </template>
                                             </div>
                                         </template>
-                                        
-                                        <div class="card-price-container">
-                                            <template if:true={pCard.listPrice}>
-                                                <span class="list-price" style="text-decoration: line-through; color: #747474; font-size: 0.85em; margin-right: 6px;">
-                                                    <lightning-formatted-number value={pCard.listPrice} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
-                                                </span>
-                                            </template>
-                                            
-                                            <span class="current-price" style="font-weight: bold;">
-                                                <lightning-formatted-number value={pCard.price} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
-                                            </span>
-                                        </div>
 
-                                        <template if:true={pCard.promo}>
-                                            <div class="card-sku" style="color:#ba0517; font-weight:bold; font-size: 0.8em;">{pCard.promo}</div>
-                                        </template>
+                                        <div class="card-compact-footer">
+                                            <div class="price-wrapper">
+                                                <template if:true={pCard.listPrice}>
+                                                    <span class="list-price">
+                                                        <lightning-formatted-number value={pCard.listPrice} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
+                                                    </span>
+                                                </template>
+                                                <span class="current-price">
+                                                    <lightning-formatted-number value={pCard.price} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
+                                                </span>
+                                                <template if:true={pCard.promo}>
+                                                    <div class="promo-text">{pCard.promo}</div>
+                                                </template>
+                                            </div>
+
+                                            <button class="add-btn-mini" onclick={handleAddRequest} data-sku={pCard.sku} data-qty="1">
+                                                Add
+                                            </button>
+                                        </div>
                                     </div>
-                                    <div class="card-actions">
-                                        <button class="add-btn" onclick={handleAddRequest} data-sku={pCard.sku} data-qty="1">Add +1</button>
-                                    </div>
+
                                 </div>
                             </template>
                         </template>
