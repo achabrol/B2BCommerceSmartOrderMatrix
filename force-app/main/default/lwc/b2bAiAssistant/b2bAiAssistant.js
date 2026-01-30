@@ -5,8 +5,9 @@ export default class B2bAiAssistant extends LightningElement {
     
     @api products = [];
 
-    // --- MEMOIRE CONTEXTUELLE DES RECOMMANDATIONS ---
-    activeRecommendations = []; 
+    // --- MEMOIRE (Items affichés à l'utilisateur) ---
+    lastShownItems = []; 
+    currentContextSource = 'user'; // 'user' ou 'system'
     // ------------------------------------------------
 
     @track messages = [
@@ -26,71 +27,47 @@ export default class B2bAiAssistant extends LightningElement {
     handleInputChange(event) { this.userInput = event.target.value; }
     handleKeyUp(event) { if (event.key === 'Enter') this.handleSend(); }
 
-    // --- LOGIQUE IA-DRIVEN (System Prompt) ---
+    // --- TRIGGER RECO (Système) ---
     @api async triggerAiRecommendation(addedItemName, recommendedItems) {
         this.isTyping = true; 
+        
+        // 1. On remplit la mémoire avec les recos
+        this.lastShownItems = recommendedItems || [];
+        this.currentContextSource = 'system'; 
 
-        // 1. Sauvegarde dans le contexte actif de l'assistant
-        this.activeRecommendations = recommendedItems || [];
+        console.log('🕵️ [AI] Trigger Reco. Items:', this.lastShownItems.length);
 
-        const systemPrompt = `SYSTEM_CONTEXT: The user successfully added "${addedItemName}" to their cart. 
-        Based on this, the system recommends these specific Cross-Sell products: 
-        ${JSON.stringify(recommendedItems)}. 
-        INSTRUCTION: Inform the user that the item was added, then suggest these recommendations naturally using the provided data.`;
+        const systemPrompt = `SYSTEM_CONTEXT: User just added "${addedItemName}" to cart. 
+        Display these Cross-Sell recommendations (Source A). 
+        INSTRUCTION: Present them briefly.`;
 
-        // Note: On passe le catalogue, mais le prompt système donne les détails spécifiques des recos
-        const contextString = JSON.stringify(this.products); 
+        // Pas de filtrage, on envoie la vérité
+        const catalogJson = JSON.stringify(this.products);
+        const lastShownJson = JSON.stringify(this.lastShownItems);
 
         try {
             const result = await askEinstein({ 
                 userMessage: systemPrompt, 
-                productContextString: contextString
+                productContextString: catalogJson,
+                lastShownContextString: lastShownJson 
             });
 
             this.isTyping = false;
 
             if (result.success) {
                 const aiData = JSON.parse(result.response);
-                
-                let cardsToDisplay = [];
-                if (aiData.items) {
-                    cardsToDisplay = aiData.items.map(item => {
-                        const fullData = recommendedItems.find(r => r.sku === item.sku) || 
-                                         this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
-                        
-                        if (fullData) {
-                            return {
-                                id: fullData.id,
-                                name: fullData.name,
-                                sku: fullData.sku || fullData.StockKeepingUnit,
-                                price: fullData.displayUnitPrice || fullData.unitPrice || fullData.price,
-                                imgUrl: fullData.imgUrl,
-                                promo: fullData.promoName || fullData.promo,
-                                currency: 'USD'
-                            };
-                        }
-                        return null;
-                    }).filter(x => x !== null);
-                }
-
-                this.messages = [...this.messages, {
-                    id: Date.now(),
-                    text: aiData.message, 
-                    isAi: true,
-                    products: cardsToDisplay.length > 0 ? cardsToDisplay : null,
-                    wrapperClass: 'message-wrapper left',
-                    bubbleClass: 'chat-bubble left'
-                }];
-                
+                // Affichage des cartes
+                let cardsToDisplay = this.mapItemsToCards(aiData.items, recommendedItems);
+                this.addAiMessage(aiData.message, cardsToDisplay);
                 this.conversationContext += `\nAssistant: ${aiData.message}`;
-                this.scrollToBottom();
             }
         } catch (e) {
             this.isTyping = false;
-            console.error('AI Trigger Error', e);
+            console.error('AI Error', e);
         }
     }
 
+    // --- MESSAGE UTILISATEUR ---
     async handleSend() {
         if (!this.userInput.trim()) return;
 
@@ -102,78 +79,31 @@ export default class B2bAiAssistant extends LightningElement {
         this.isTyping = true;
         this.scrollToBottom();
 
-        // 1. Préparation du Contexte PRINCIPAL (Grille)
-        const contextData = this.products.map(p => {
-            let tierInfo = '';
-            if (p.tierList && p.tierList.length > 0) {
-                tierInfo = p.tierList.map(t => t.label).join(', ');
-            }
-            
-            const sellingPrice = p.displayUnitPrice || p.unitPrice; 
-            let standardPrice = p.displayListPrice;
-            if (!standardPrice && sellingPrice !== p.unitPrice) { standardPrice = p.unitPrice; }
-            let stockVal = 'Unlimited';
-            if (p.stock !== undefined && p.stock !== null && p.stock !== '') { stockVal = p.stock; }
-            let enrichedDesc = p.Description || '';
-            if (p.variationInfo) { enrichedDesc += ` (${p.variationInfo})`; }
+        // Capture état avant appel
+        const sourceBeforeCall = this.currentContextSource;
 
-            return {
-                name: p.name,
-                sku: p.sku || p.StockKeepingUnit, 
-                desc: enrichedDesc, 
-                price: sellingPrice,       
-                listPrice: standardPrice,  
-                promo: p.promoName || '',  
-                stock: stockVal,             
-                selected: p.qtyValue || 0,   
-                inCart: p.cartQty || 0,      
-                min: p.minQty || 1,
-                max: p.maxQty || '',
-                inc: p.increment || 1,
-                tiers: tierInfo
+        // 1. Catalogue Complet (Vérité terrain)
+        const catalogJson = JSON.stringify(this.products.map(p => this.mapProductToContext(p)));
+        
+        // 2. Items Affichés (Contexte Visuel)
+        // On les mappe proprement
+        const lastShownContext = this.lastShownItems.map(item => {
+            const updated = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+            return updated ? this.mapProductToContext(updated) : {
+                name: item.name, sku: item.sku, 
+                desc: (sourceBeforeCall === 'system' ? "(RECOMMENDED) " : "") + (item.variationInfo || ""),
+                selected: 0, inCart: 0
             };
         });
+        const lastShownJson = JSON.stringify(lastShownContext);
 
-        // 2. FUSION : Ajouter les Recos Actives au contexte avec PRIORITÉ
-        if (this.activeRecommendations.length > 0) {
-            console.log('🕵️ [DEBUG AI] Injection des Recos dans le contexte JSON...');
-            
-            // On inverse l'ordre pour les mettre EN PREMIER (unshift)
-            [...this.activeRecommendations].reverse().forEach(reco => {
-                const existsIndex = contextData.findIndex(c => c.sku === reco.sku);
-                
-                let newItem = {
-                    name: reco.name,
-                    sku: reco.sku,
-                    // --- TAG SPECIAL POUR L'IA (CASE 5) ---
-                    desc: "(Recommended) " + (reco.variationInfo || "Cross-Sell Product"), 
-                    // -------------------------------------
-                    price: reco.displayUnitPrice || reco.price,
-                    stock: 'Available',
-                    selected: 0,
-                    inCart: 0
-                };
-
-                if (existsIndex !== -1) {
-                    // Si existe déjà, on le déplace en haut et on update la desc
-                    let existing = contextData[existsIndex];
-                    existing.desc = "(Recommended) " + existing.desc;
-                    contextData.splice(existsIndex, 1); // Retirer de l'ancienne position
-                    contextData.unshift(existing);      // Mettre en haut
-                } else {
-                    // Si nouveau, on ajoute en haut
-                    contextData.unshift(newItem);
-                }
-            });
-        }
-
-        const contextString = JSON.stringify(contextData); 
-        console.log('🕵️ [DEBUG AI] JSON envoyé:', contextString);
+        console.log('🕵️ [AI] Sending Request. Source:', sourceBeforeCall);
 
         try {
             const result = await askEinstein({ 
                 userMessage: this.conversationContext,
-                productContextString: contextString
+                productContextString: catalogJson,
+                lastShownContextString: lastShownJson 
             });
             
             this.isTyping = false;
@@ -187,125 +117,113 @@ export default class B2bAiAssistant extends LightningElement {
                     
                     if (aiData.items && Array.isArray(aiData.items)) {
                         aiData.items.forEach(item => {
-                            // 3. RECHERCHE ETENDUE (Grille OU Recos)
-                            let foundProduct = this.products.find(p => 
-                                (p.sku === item.sku) || (p.StockKeepingUnit === item.sku)
-                            );
-
-                            // Si pas dans la grille, check dans les recos actives
-                            if (!foundProduct && this.activeRecommendations.length > 0) {
-                                foundProduct = this.activeRecommendations.find(r => r.sku === item.sku);
-                                if (foundProduct) {
-                                    // Mapping rapide pour uniformiser
-                                    foundProduct = {
-                                        ...foundProduct,
-                                        qtyValue: 0, 
-                                        StockKeepingUnit: foundProduct.sku 
-                                    };
-                                }
-                            }
+                            // Recherche : Priorité au contexte affiché, puis au catalogue
+                            let foundProduct = this.lastShownItems.find(r => r.sku === item.sku) ||
+                                               this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
 
                             if (foundProduct) {
+                                if (!foundProduct.imgUrl && foundProduct.defaultImage) foundProduct.imgUrl = foundProduct.defaultImage.url;
+
                                 let finalQty = 0;
                                 let qtyRaw = item.quantity ? parseInt(item.quantity, 10) : 0;
-
-                                console.log(`🤖 Action IA pour ${item.sku}: ${item.action} (Qté: ${qtyRaw})`);
 
                                 if (item.action === 'set') {
                                     const currentSelected = foundProduct.qtyValue ? parseFloat(foundProduct.qtyValue) : 0;
                                     finalQty = qtyRaw - currentSelected;
-                                } 
-                                else if (item.action === 'remove') {
+                                } else if (item.action === 'remove') {
                                     finalQty = -qtyRaw;
-                                }
-                                else {
+                                } else {
                                     finalQty = qtyRaw;
                                 }
 
-                                // --- MODIFICATION : CHECK IS RECO ---
-                                const isFromReco = this.activeRecommendations.some(r => r.sku === item.sku);
-                                // ------------------------------------
+                                // Info pour le parent : Est-ce que cet item vient de la liste "Système" (Recommandation) ?
+                                // Cela permet au parent d'arrêter la boucle SI C'EST UNE COMMANDE SUR LA RECO.
+                                const isSystemReco = (sourceBeforeCall === 'system') && this.lastShownItems.some(r => r.sku === item.sku);
+                                
+                                console.log(`🕵️ [AI] Item ${item.sku}. IsSystemReco? ${isSystemReco}`);
 
+                                // Pas de blocage artificiel. On transmet l'intention de l'IA.
                                 if (finalQty !== 0 && item.action !== 'search') {
                                     this.dispatchEvent(new CustomEvent('addproduct', {
                                         detail: { 
                                             sku: foundProduct.sku || foundProduct.StockKeepingUnit, 
                                             quantity: finalQty,
-                                            isRecommendation: isFromReco // On passe l'info au parent
+                                            isRecommendation: isSystemReco // Flag transmis au parent
                                         }
                                     }));
                                 }
-                                
-                                productsToDisplay.push({
-                                    id: foundProduct.id,
-                                    name: foundProduct.name,
-                                    sku: foundProduct.sku || foundProduct.StockKeepingUnit,
-                                    price: foundProduct.displayUnitPrice || foundProduct.price,
-                                    imgUrl: foundProduct.imgUrl,
-                                    promo: foundProduct.promoName,
-                                    currency: 'USD'
-                                });
+                                productsToDisplay.push(this.formatCard(foundProduct));
                             }
                         });
                     }
-                    this.addMessage(aiData.message, true, productsToDisplay);
+
+                    // Mise à jour de la mémoire : Si l'IA affiche de nouveaux produits, le contexte change.
+                    if (productsToDisplay.length > 0) {
+                        this.lastShownItems = productsToDisplay;
+                        this.currentContextSource = 'user'; // On repasse la main à l'utilisateur
+                        console.log('🕵️ [AI] Memory Updated -> New Source: USER');
+                    }
+
+                    this.addAiMessage(aiData.message, productsToDisplay);
 
                 } catch (jsonError) {
-                    console.error('JSON Parse Error:', jsonError);
+                    console.error('JSON Error', jsonError);
                     this.addMessage(result.response, true);
-                    this.conversationContext += `\nAssistant: ${result.response}`;
                 }
-
             } else {
                 this.addMessage("⚠️ " + result.message, true);
             }
-
         } catch (error) {
             this.isTyping = false;
-            console.error('LWC Error:', error);
-            this.addMessage("Sorry, connection error.", true);
+            this.addMessage("Connection error.", true);
         }
+    }
 
+    // --- HELPERS (Inchangés) ---
+    mapItemsToCards(items, sourceList) {
+        if (!items) return [];
+        return items.map(item => {
+            const fullData = sourceList.find(r => r.sku === item.sku) || 
+                             this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+            return fullData ? this.formatCard(fullData) : null;
+        }).filter(x => x !== null);
+    }
+
+    formatCard(p) {
+        return {
+            id: p.id, name: p.name, sku: p.sku || p.StockKeepingUnit,
+            price: p.displayUnitPrice || p.unitPrice || p.price,
+            imgUrl: p.imgUrl, promo: p.promoName || p.promo,
+            currency: 'USD'
+        };
+    }
+
+    mapProductToContext(p) {
+        let tierInfo = '';
+        if (p.tierList) tierInfo = p.tierList.map(t => t.label).join(', ');
+        const sellingPrice = p.displayUnitPrice || p.unitPrice; 
+        return {
+            name: p.name, sku: p.sku || p.StockKeepingUnit, 
+            desc: p.Description + (p.variationInfo ? ' ' + p.variationInfo : ''), 
+            price: sellingPrice, stock: 'Available', 
+            selected: p.qtyValue || 0, inCart: p.cartQty || 0,
+            tiers: tierInfo
+        };
+    }
+
+    addAiMessage(text, products) {
+        this.messages = [...this.messages, {
+            id: Date.now(), text: text, isAi: true,
+            products: products && products.length > 0 ? products : null,
+            wrapperClass: 'message-wrapper left', bubbleClass: 'chat-bubble left'
+        }];
         this.scrollToBottom();
     }
 
     addMessage(text, isAi, products = null) {
-        let productCards = [];
-        
-        if (products) {
-            const list = Array.isArray(products) ? products : [products];
-            
-            productCards = list.map(p => {
-                const sellingPrice = p.displayUnitPrice || p.unitPrice;
-                let standardPrice = p.displayListPrice;
-                if (!standardPrice && sellingPrice !== p.unitPrice) {
-                    standardPrice = p.unitPrice;
-                }
-
-                let specsArray = [];
-                if (p.variationInfo) {
-                    specsArray = p.variationInfo.split(', '); 
-                }
-
-                return {
-                    id: p.id,
-                    name: p.name,
-                    sku: p.sku || p.StockKeepingUnit,
-                    price: sellingPrice,
-                    imgUrl: p.imgUrl,
-                    promo: p.promoName,
-                    listPrice: standardPrice, 
-                    currency: p.currencyCode || 'USD',
-                    specs: specsArray 
-                };
-            });
-        }
-
         this.messages = [...this.messages, {
-            id: Date.now(),
-            text: text,
-            isAi: isAi,
-            products: productCards.length > 0 ? productCards : null,
+            id: Date.now(), text: text, isAi: isAi,
+            products: products,
             wrapperClass: `message-wrapper ${isAi ? 'left' : 'right'}`,
             bubbleClass: `chat-bubble ${isAi ? 'left' : 'right'}`
         }];

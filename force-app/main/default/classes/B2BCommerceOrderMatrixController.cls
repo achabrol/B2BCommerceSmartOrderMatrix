@@ -1,10 +1,10 @@
 /**
  * @description Contrôleur B2B Order Matrix
- * VERSION DEBUG & CONTEXTE RENFORCÉ
+ * VERSION FINALE : Prompt "Smart Context" (Source A vs Source B)
  */
 public without sharing class B2BCommerceOrderMatrixController {
 
-    // --- 1. CATALOGUE (INCHANGÉ) ---
+    // --- 1. CATALOGUE ---
     @AuraEnabled
     public static Map<String, Object> getAllActiveProducts(String communityId, String effectiveAccountId) {
         String webstoreId = resolveWebstoreId(communityId);
@@ -70,7 +70,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return buildResponseFromSummaries(uniqueProductMap.values(), webstoreId, accountId);
     }
 
-    // --- 2. PAST ORDERS (INCHANGÉ) ---
+    // --- 2. PAST ORDERS ---
     @AuraEnabled
     public static Map<String, Object> getPastOrders(String effectiveAccountId, String fromDateStr, String toDateStr) {
         Date fromDate = String.isNotBlank(fromDateStr) ? Date.valueOf(fromDateStr) : null;
@@ -98,7 +98,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return new Map<String, Object>{ 'orders' => orderList, 'allItems' => allItemsList };
     }
 
-    // --- 3. ORDER PRODUCTS (INCHANGÉ) ---
+    // --- 3. ORDER PRODUCTS ---
     @AuraEnabled
     public static Map<String, Object> getOrderProducts(String communityId, String effectiveAccountId, String orderSummaryId, Boolean skipEnrichment) {
         String webstoreId = resolveWebstoreId(communityId);
@@ -138,7 +138,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return responseMap;
     }
 
-    // --- HELPER PRINCIPAL (INCHANGÉ) ---
+    // --- HELPER PRINCIPAL ---
     private static Map<String, Object> buildResponseFromSummaries(List<ConnectApi.ProductSummary> summaries, String webstoreId, String accountId) {
         Map<String, Object> responseMap = new Map<String, Object>();
         if (summaries == null || summaries.isEmpty()) {
@@ -219,7 +219,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return responseMap;
     }
 
-    // --- HELPER VARIATIONS (INCHANGÉ) ---
+    // --- HELPER VARIATIONS ---
     private static Map<String, String> getVariationInfoMapDynamic(Set<String> productIds) {
         Map<String, String> results = new Map<String, String>();
         if (productIds.isEmpty()) return results;
@@ -263,7 +263,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return results;
     }
     
-    // ... (Helpers Cart/OCI INCHANGÉS) ...
+    // --- HELPER CART ---
     @AuraEnabled
     public static void addItemsToCart(String communityId, String effectiveAccountId, Map<String, Double> itemsMap) {
         String webstoreId = resolveWebstoreId(communityId);
@@ -287,6 +287,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         if (!batchInputs.isEmpty()) { ConnectApi.CommerceCart.addItemsToCart(webstoreId, effectiveAccountId, cartId, batchInputs); }
     }
 
+    // --- HELPER CART QUANTITIES ---
     @AuraEnabled
     public static Map<String, Decimal> getCartQuantities(String communityId, String effectiveAccountId, List<String> productIds, String activeCartId) {
         Map<String, Decimal> cartMap = new Map<String, Decimal>();
@@ -296,6 +297,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return cartMap;
     }
 
+    // --- HELPER OCI STOCK ---
     private static Map<String, String> getOCIStockMap(String webstoreId, Set<String> skus) {
         Map<String, String> stockMap = new Map<String, String>();
         if (skus.isEmpty()) return stockMap;
@@ -316,11 +318,14 @@ public without sharing class B2BCommerceOrderMatrixController {
         } catch(Exception e) {}
         return stockMap;
     }
+
+    // --- HELPER UTILS ---
     private static String getCatalogId(String webstoreId) {
         List<SObject> links = Database.query('SELECT ProductCatalogId FROM WebStoreCatalog WHERE SalesStoreId = :webstoreId LIMIT 1');
         if (links.isEmpty()) links = Database.query('SELECT ProductCatalogId FROM WebStoreCatalog WHERE WebStoreId = :webstoreId LIMIT 1');
         return links.isEmpty() ? null : (String) links[0].get('ProductCatalogId');
     }
+    
     private static Map<String, String> resolveOCISource(String webstoreId) {
         Map<String, String> res = new Map<String, String>{ 'IsEnabled' => 'false' };
         List<WebStoreInventorySource> sources = [SELECT IsEnabled, LocationSourceId, LocationSource.Type FROM WebStoreInventorySource WHERE WebStoreId = :webstoreId LIMIT 1];
@@ -334,6 +339,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
         return res;
     }
+    
     private static String resolveWebstoreId(String communityId) {
         try {
             List<WebStoreNetwork> wsn = [SELECT WebStoreId FROM WebStoreNetwork WHERE NetworkId = :communityId LIMIT 1];
@@ -346,89 +352,71 @@ public without sharing class B2BCommerceOrderMatrixController {
         return null;
     }
 
-  // --- 5. EINSTEIN AI CHAT ---
+    // --- 5. EINSTEIN AI CHAT (INTELLIGENT CONTEXT - VERSION SMART) ---
     @AuraEnabled
-    public static Map<String, Object> askEinstein(String userMessage, String productContextString) {
+    public static Map<String, Object> askEinstein(String userMessage, String productContextString, String lastShownContextString) {
         Map<String, Object> result = new Map<String, Object>();
         
+        System.debug('📡 [APEX] User Msg: ' + userMessage);
+        Integer shortMemSize = (lastShownContextString != null) ? lastShownContextString.length() : 0;
+        System.debug('📡 [APEX] Short Memory Size: ' + shortMemSize);
+
         try {
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            String prompt = 'You are a friendly B2B Sales Assistant.\n';
-            prompt += 'You have access to CATALOG DATA (JSON).\n\n';
+            // --- CONSTRUCTION DU PROMPT INTELLIGENT ---
+            String prompt = 'You are a B2B Sales Assistant. Your goal is to interpret the user intent based on WHAT THEY SEE.\n';
             
-            prompt += '### DATA:\n' + productContextString + '\n\n';
+            // 1. Définition des sources de données
+            prompt += 'You have access to 2 Data Sources:\n';
             
-            prompt += '### INSTRUCTIONS:\n';
+            prompt += '--- SOURCE A: CURRENT_SCREEN (High Priority) ---\n';
+            prompt += 'These items are CURRENTLY displayed to the user (Recommendations or Search Results).\n';
+            prompt += (String.isBlank(lastShownContextString) ? '[]' : lastShownContextString) + '\n\n';
             
-            // 1. VISUAL CARDS
-            prompt += '1. VISUAL CARDS (VERY IMPORTANT):\n';
-            prompt += '   - If you recommend or discuss specific products, YOU MUST include them in the "items" array in the JSON output.\n';
-            prompt += '   - Use action="search" for recommendations.\n';
-            prompt += '   - This will automatically display a visual card with image, price, and specs.\n';
+            prompt += '--- SOURCE B: FULL_DATABASE (Low Priority) ---\n';
+            prompt += 'This is the complete product catalog. Use only for NEW SEARCHES.\n';
+            prompt += productContextString + '\n\n';
             
-            // 2. TEXTE
-            prompt += '2. TEXT MESSAGE:\n';
-            prompt += '   - Keep the text SHORT and CLEAN.\n';
-            prompt += '   - DO NOT list prices, stock, or technical specs in the text (the user sees them on the cards).\n';
-            prompt += '   - Just give a friendly summary: "Here are the models I found for you..."\n';
-            prompt += '   - Mention differences briefly (e.g., "I have it in Blue and Red") but let the cards show details.\n';
-            prompt += '   - Use the USER\'S LANGUAGE (e.g. French, English).\n';
-
-            // --- NOUVEAU CASE 3 : SYSTEM CONTEXT (Cross-Sell) ---
-            prompt += '3. SCENARIO: SYSTEM_CONTEXT (Cross-Sell):\n';
-            prompt += '   - If the user input starts with "SYSTEM_CONTEXT:", it means the user performed an action (like adding to cart) and the system found cross-sell items.\n';
-            prompt += '   - YOUR JOB: Acknowledge the action (e.g., "Added to cart") AND naturally suggest the recommended items provided in the context.\n';
-            prompt += '   - Example: "Great choice! I\'ve added that to your order. Other customers often pair it with these items:"\n';
-            // ----------------------------------------------------
-
-            // 4. ACTIONS & INTENTS (CRITICAL RULES)
-            prompt += '4. ACTIONS & INTENTS (CRITICAL RULES):\n';
+            // 2. Règles de décision (Cerveau)
+            prompt += '### DECISION LOGIC (Follow Step-by-Step):\n';
             
-            prompt += '   - CASE 1: "ADD" (Relative)\n';
-            prompt += '     User says: "Add 5", "Plus 5", "Put 5 more".\n';
-            prompt += '     -> OUTPUT: action="add", quantity=5.\n';
+            prompt += 'STEP 1: ANALYZE INTENT\n';
+            prompt += '   - Is the user referring to items on screen? (e.g., "Add them", "Yes", "Add 5", "I like the red one")\n';
+            prompt += '   - OR Is the user starting a new search? (e.g., "Show me shorts", "I need shoes")\n';
             
-            prompt += '   - CASE 2: "REMOVE" (Relative)\n';
-            prompt += '     User says: "Remove 2", "Delete 2", "Less 5".\n';
-            prompt += '     -> OUTPUT: action="remove", quantity=2.\n';
+            prompt += 'STEP 2: EXECUTE\n';
+            prompt += '   - IF INTENT is "Refer to screen" (Adding items):\n';
+            prompt += '     -> TARGET items from SOURCE A (CURRENT_SCREEN).\n';
+            prompt += '     -> DO NOT target items from Source B.\n';
+            prompt += '     -> IGNORE items in Source A if they are marked as "selected" > 0 (already in cart), unless user explicitly says "Add MORE".\n';
+            
+            prompt += '   - IF INTENT is "New Search":\n';
+            prompt += '     -> IGNORE Source A.\n';
+            prompt += '     -> SEARCH in SOURCE B (FULL_DATABASE).\n';
 
-            prompt += '   - CASE 3: "SET / TARGET" (Absolute) - PRIORITY\n';
-            prompt += '     User says: "I want 10", "Actually 10", "Just 10", "Only 10", "Set to 5".\n';
-            prompt += '     -> OUTPUT: action="set", quantity=10.\n';
-            prompt += '     (NEVER use "add" for these phrases. "I want 10" means the result is 10, not +10).\n';
+            prompt += 'STEP 3: ACTION MAPPING\n';
+            prompt += '   - "Add 5" -> action="add", quantity=5\n';
+            prompt += '   - "Set to 10" -> action="set", quantity=10\n';
+            prompt += '   - "Remove" -> action="remove"\n';
+            prompt += '   - "Show/Find" -> action="search"\n';
 
-            prompt += '   - CASE 4: "REMOVE ALL"\n';
-            prompt += '     -> OUTPUT: action="set", quantity=0.\n';
-
-            // --- MODIFICATION MAJEURE DU CASE 5 ---
-            prompt += '   - CASE 5: "ADD THEM" / "ADD RECOMMENDATIONS" / "ADD OF EACH" (Contextual):\n';
-            prompt += '     IF the user responds to a recommendation (e.g., "Add 5 of each", "Yes please"):\n';
-            prompt += '     1. STRICTLY IGNORE any item where "selected" is greater than 0. Do NOT output them.\n';
-            prompt += '     2. TARGET ONLY items where "desc" contains "(Recommended)".\n';
-            prompt += '     3. IF no recommended items found, ask for clarification.\n';
-            // --------------------------------------
-
-            prompt += '5. OUTPUT FORMAT (JSON ONLY):\n';
-            prompt += '   { \n';
-            prompt += '     "message": "Short text summary", \n';
-            prompt += '     "items": [ \n';
-            prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "set" OR "search" } \n';
-            prompt += '     ] \n';
-            prompt += '   }\n\n';
+            prompt += '### OUTPUT FORMAT (JSON ONLY):\n';
+            prompt += '{ "message": "Short text", "items": [ { "sku": "...", "quantity": 0, "action": "..." } ] }\n\n';
             
             prompt += '### USER SAYS:\n' + userMessage;
             
             generationsInput.promptTextorId = prompt;
             generationsInput.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
             generationsInput.additionalConfig.maxTokens = 800;
-            generationsInput.additionalConfig.temperature = 0.1; // Température réduite pour plus de rigueur
+            generationsInput.additionalConfig.temperature = 0.0; // Zéro hallucination
             generationsInput.additionalConfig.applicationName = 'PromptBuilderPreview';
             
             ConnectApi.EinsteinLLMGenerationsOutput generationsOutput = ConnectApi.EinsteinLLM.generateMessages(generationsInput);
             String aiResponseText = generationsOutput.generations[0].text;
             
             aiResponseText = aiResponseText.replace('```json', '').replace('```', '').trim();
+            System.debug('📡 [APEX] Response: ' + aiResponseText);
             
             result.put('success', true);
             result.put('response', aiResponseText);

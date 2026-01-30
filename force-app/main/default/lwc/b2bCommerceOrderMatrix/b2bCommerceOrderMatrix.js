@@ -2,7 +2,7 @@ import { LightningElement, wire, api, track } from 'lwc';
 import { AppContextAdapter, SessionContextAdapter } from 'commerce/contextApi';
 import { CartSummaryAdapter, refreshCartSummary } from 'commerce/cartApi';
 import { getPromotionPricingCollection } from 'commerce/promotionApi';
-// Import API Standard v64 (Nécessaire pour les recos)
+// Import API Standard v64
 import { getProductRecommendations } from 'commerce/productApi';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import { resolve } from 'experience/resourceResolver';
@@ -36,10 +36,8 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     rawProductData = [];
     orderItemsCache = {}; 
     
-    // --- CACHE POUR RECOMMANDATIONS (POUR LES RETROUVER SI HORS GRILLE) ---
-    // Essentiel pour que l'IA puisse "voir" et ajouter les produits qu'elle a recommandés
+    // CACHE POUR RECOMMANDATIONS (POUR LES RETROUVER SI HORS GRILLE)
     recoProductCache = []; 
-    // ----------------------------------------------------------------------
 
     searchTerm = ''; 
     webstoreId;
@@ -51,7 +49,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     currentSourceValue = SOURCE_CATALOG;
     @track pastOrdersList = []; 
 
-    // Variables Debounce (100ms) pour éviter le spam de requêtes IA
+    // VARIABLES DEBOUNCE (100ms)
     _recoTimer;                 
     _recoPendingIds = new Set(); 
     _recoPendingNames = [];      
@@ -267,11 +265,12 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         });
     }
 
-   // --- MODIFICATION : AJOUT VIA CHAT (Support Reco Cache) ---
+    // --- MODIFICATION : AJOUT VIA CHAT ---
     async handleAiAddProduct(event) {
-        // --- 1. Récupération du flag anti-reco (isRecommendation) ---
-        const { sku, quantity, isRecommendation } = event.detail;
+        const { sku, quantity, isRecommendation } = event.detail; // On récupère isRecommendation
         
+        console.log(`🕵️ [DEBUG PARENT] Add AI Request: SKU=${sku}, IsReco=${isRecommendation}`);
+
         // 1. Chercher dans la grille principale
         let productFound = this.rawProductData.find(p => 
             (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
@@ -282,7 +281,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             productFound = this.recoProductCache.find(p => 
                 (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
             );
-            console.log('🔎 Recherche Reco Cache pour', sku, 'Trouvé ?', !!productFound);
         }
 
         if (productFound) {
@@ -294,7 +292,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             if (newQty === 0) { delete this.inputQty[pId]; } 
             else { this.inputQty[pId] = String(newQty); }
 
-            // Si c'est un produit de la grille, on refresh l'affichage
             const isInGrid = this.rawProductData.some(p => p.id === pId);
             if (isInGrid) {
                 this.buildGrid(); 
@@ -318,11 +315,14 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                     this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
                 }
 
-                // === DECLENCHEMENT RECO SUIVANTE AVEC DEBOUNCE (STOP SI C'EST DEJA UNE RECO) ===
+                // === LOGIQUE DE BOUCLE ===
                 if (quantity > 0) {
+                    // Si le chat nous dit que c'est une reco système, ON STOPPE la boucle.
                     if (isRecommendation) {
                         console.log('🛑 Stop Reco Loop: Ce produit est une recommandation, pas de nouvelle reco.');
                     } else {
+                        // Sinon (c'était une recherche utilisateur), ON CONTINUE.
+                        console.log('✅ Continue Loop: Ce produit vient d une recherche user.');
                         this.scheduleAiRecommendation(pId, productFound.name);
                     }
                 }
@@ -432,7 +432,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                         const info = { price: parseFloat(item.promotionalPrice) || null };
                         if (item.promotionPriceAdjustmentList?.[0]?.displayName) info.name = item.promotionPriceAdjustmentList[0].displayName;
                         else if (item.promotionPriceAdjustmentList?.[0]?.adjustmentValue) info.name = 'Promotion';
-                        recPromoMap[item.productId] = info;
+                        if (info.name || info.price !== null) recPromoMap[item.productId] = info;
                     });
                 }
 
@@ -600,6 +600,53 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         if (newVal === 0) delete this.inputQty[prodId];
         else this.inputQty[prodId] = String(newVal);
         this.buildGrid();
+    }
+
+    async handleAddToCart() {
+        if (this._isPreview || this.isSaving) return;
+        this.isSaving = true;
+        const hasItems = Object.values(this.inputQty).some(val => val && parseFloat(val) > 0);
+        
+        if (this.hasErrors) {
+            this.showToast('Error', 'Please correct invalid quantities (red fields).', 'error');
+            this.isSaving = false;
+            return;
+        }
+
+        if (!hasItems) { this.showToast('Warning', 'Please select at least one item.', 'warning'); this.isSaving = false; return; }
+        
+        try {
+            const itemsMap = {};
+            const addedIds = []; 
+
+            for (const [pId, qtyStr] of Object.entries(this.inputQty)) { 
+                const qty = parseFloat(qtyStr); 
+                if (qty > 0) {
+                    itemsMap[pId] = qty;
+                    addedIds.push(pId);
+                }
+            }
+            await addItemsToCart({ communityId: communityId, effectiveAccountId: this.effectiveAccountId, itemsMap: itemsMap });
+            for (const [pId, qty] of Object.entries(itemsMap)) { this.cartDataMap[pId] = (parseFloat(this.cartDataMap[pId] || 0) + qty); }
+            this.inputQty = {};
+            this.buildGrid(); 
+            this.showToast('Success', 'Items added to cart.', 'success');
+            await refreshCartSummary();
+            this.dispatchEvent(new CustomEvent('cartchanged'));
+
+            // === SCENARIO 2 : RECO VIA GRILLE (AJOUT DE MASSE) ===
+            if (addedIds.length > 0) {
+                const recs = await this.getRecommendationsData(addedIds);
+                if (recs.length > 0) {
+                    const chatComp = this.querySelector('c-b2b-ai-assistant');
+                    if (chatComp) {
+                        chatComp.triggerAiRecommendation('items', recs);
+                    }
+                }
+            }
+
+        } catch (error) { this.showToast('Error', error.body?.message || 'Error adding to cart.', 'error'); this.fetchCartDataAndRebuild(false); } 
+        finally { this.isSaving = false; }
     }
 
     showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }
