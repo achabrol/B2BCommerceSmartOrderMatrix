@@ -22,6 +22,74 @@ export default class B2bAiAssistant extends LightningElement {
     handleInputChange(event) { this.userInput = event.target.value; }
     handleKeyUp(event) { if (event.key === 'Enter') this.handleSend(); }
 
+    // --- NOUVELLE LOGIQUE IA-DRIVEN (System Prompt) ---
+    @api async triggerAiRecommendation(addedItemName, recommendedItems) {
+        this.isTyping = true; // Montre que l'IA réfléchit
+
+        // Construction du message système invisible
+        // On donne à l'IA ce que l'utilisateur a fait + les produits à recommander
+        const systemPrompt = `SYSTEM_CONTEXT: The user successfully added "${addedItemName}" to their cart. 
+        Based on this, the system recommends these specific Cross-Sell products: 
+        ${JSON.stringify(recommendedItems)}. 
+        INSTRUCTION: Inform the user that the item was added, then suggest these recommendations naturally using the provided data.`;
+
+        // On passe le catalogue complet (this.products) comme contexte global
+        // mais le systemPrompt donne le focus immédiat.
+        const contextString = JSON.stringify(this.products); 
+
+        try {
+            const result = await askEinstein({ 
+                userMessage: systemPrompt, // L'IA reçoit ça comme une instruction interne
+                productContextString: contextString
+            });
+
+            this.isTyping = false;
+
+            if (result.success) {
+                const aiData = JSON.parse(result.response);
+                
+                // L'IA a généré le texte ET les items à afficher
+                let cardsToDisplay = [];
+                if (aiData.items) {
+                    cardsToDisplay = aiData.items.map(item => {
+                        // On retrouve les détails complets (Image, etc) 
+                        const fullData = recommendedItems.find(r => r.sku === item.sku) || 
+                                         this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+                        
+                        if (fullData) {
+                            return {
+                                id: fullData.id,
+                                name: fullData.name,
+                                sku: fullData.sku || fullData.StockKeepingUnit,
+                                price: fullData.displayUnitPrice || fullData.unitPrice,
+                                imgUrl: fullData.imgUrl,
+                                promo: fullData.promoName || fullData.promo,
+                                currency: 'USD'
+                            };
+                        }
+                        return null;
+                    }).filter(x => x !== null);
+                }
+
+                // Ajout du message IA
+                this.messages = [...this.messages, {
+                    id: Date.now(),
+                    text: aiData.message, // Le texte généré par l'IA
+                    isAi: true,
+                    products: cardsToDisplay.length > 0 ? cardsToDisplay : null,
+                    wrapperClass: 'message-wrapper left',
+                    bubbleClass: 'chat-bubble left'
+                }];
+                
+                this.conversationContext += `\nAssistant: ${aiData.message}`;
+                this.scrollToBottom();
+            }
+        } catch (e) {
+            this.isTyping = false;
+            console.error('AI Trigger Error', e);
+        }
+    }
+
     async handleSend() {
         if (!this.userInput.trim()) return;
 
@@ -50,7 +118,6 @@ export default class B2bAiAssistant extends LightningElement {
                  stockVal = p.stock;
             }
 
-            // Description enrichie pour l'IA
             let enrichedDesc = p.Description || '';
             if (p.variationInfo) {
                 enrichedDesc += ` (${p.variationInfo})`;
@@ -103,25 +170,17 @@ export default class B2bAiAssistant extends LightningElement {
                                 console.log(`🤖 Action IA pour ${item.sku}: ${item.action} (Qté: ${qtyRaw})`);
 
                                 if (item.action === 'set') {
-                                    // --- CORRECTION ICI ---
-                                    // Le produit brut (foundProduct) a sa quantité dans 'qtyValue', pas 'selected'.
-                                    // 'selected' n'existe que dans le JSON envoyé à l'IA, pas dans l'objet source.
                                     const currentSelected = foundProduct.qtyValue ? parseFloat(foundProduct.qtyValue) : 0;
-                                    
-                                    // Calcul du Delta : Cible - Actuel
                                     finalQty = qtyRaw - currentSelected;
-                                    
-                                    console.log(`   -> Mode SET: Actuel=${currentSelected}, Cible=${qtyRaw} => Delta=${finalQty}`);
                                 } 
                                 else if (item.action === 'remove') {
                                     finalQty = -qtyRaw;
                                 }
                                 else {
-                                    // Default add/search
                                     finalQty = qtyRaw;
                                 }
 
-                                if (finalQty !== 0) {
+                                if (finalQty !== 0 && item.action !== 'search') {
                                     this.dispatchEvent(new CustomEvent('addproduct', {
                                         detail: { 
                                             sku: foundProduct.sku || foundProduct.StockKeepingUnit, 
@@ -167,7 +226,6 @@ export default class B2bAiAssistant extends LightningElement {
                     standardPrice = p.unitPrice;
                 }
 
-                // Transformation de "Color: Blue, Size: M" en tableau ["Color: Blue", "Size: M"]
                 let specsArray = [];
                 if (p.variationInfo) {
                     specsArray = p.variationInfo.split(', '); 

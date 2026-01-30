@@ -2,6 +2,8 @@ import { LightningElement, wire, api, track } from 'lwc';
 import { AppContextAdapter, SessionContextAdapter } from 'commerce/contextApi';
 import { CartSummaryAdapter, refreshCartSummary } from 'commerce/cartApi';
 import { getPromotionPricingCollection } from 'commerce/promotionApi';
+// Import API Standard v64
+import { getProductRecommendations } from 'commerce/productApi';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import { resolve } from 'experience/resourceResolver';
 
@@ -43,10 +45,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     // Gestion d'état
     currentSourceValue = SOURCE_CATALOG;
     @track pastOrdersList = []; 
-
-    selectedOrderId = null;
-    fromDate = null;
-    toDate = null;
 
     // --- GETTERS ---
     get productCount() { return this.products ? this.products.length : 0; }
@@ -121,45 +119,27 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         this.isLoading = true;
         try {
             const result = await getAllActiveProducts({ communityId: communityId, effectiveAccountId: this.effectiveAccountId });
-            
-            console.log('🔥 [APEX] Retour complet de getAllActiveProducts :', result);
-
             if (result.error) { 
                 this.error = result.error; 
-                console.error('❌ Erreur retournée par Apex :', result.error);
-            } 
-            else {
+            } else {
                 const unsortedProducts = result.products || [];
-                
-                if (unsortedProducts.length > 0) {
-                    console.log('📦 [PRODUIT 1] Structure brute :', unsortedProducts[0]);
-                    console.log('🔑 [CHAMPS DISPOS] :', Object.keys(unsortedProducts[0]));
-                } else {
-                    console.warn('⚠️ Aucun produit trouvé dans le catalogue.');
-                }
-
                 unsortedProducts.sort((a, b) => {
                     const nameA = (a.name || '').toLowerCase();
                     const nameB = (b.name || '').toLowerCase();
                     return nameA.localeCompare(nameB);
                 });
-
                 this.masterCatalogData = unsortedProducts;
                 this.rawProductData = [...this.masterCatalogData];
-                
                 if (this.rawProductData.length > 0) { 
                     await this.fetchCartDataAndRebuild(false); 
                     this.fetchPromotions(); 
-                } 
-                else { 
+                } else { 
                     this.buildGrid(); 
                 }
             }
         } catch (error) { 
             this.error = 'Unable to load products.'; 
-            console.error('❌ JS Exception :', error); 
-        } 
-        finally { 
+        } finally { 
             this.isLoading = false; 
         }
     }
@@ -189,7 +169,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                 orderItemIds.add(item.productId);
             });
             this.rawProductData = this.masterCatalogData.filter(p => orderItemIds.has(p.id));
-            this.rawProductData.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             if (this.rawProductData.length > 0) { 
                 this.fetchCartDataAndRebuild(true); 
                 if (Object.keys(this.promoDataMap).length === 0) this.fetchPromotions();
@@ -213,7 +192,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         finally { this.isLoading = false; }
     }
 
-    // --- GRID BUILD ---
     buildGrid() {
         const term = this.searchTerm ? this.searchTerm.toLowerCase() : '';
         const filteredData = this.rawProductData.filter(p => {
@@ -246,15 +224,12 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             const priceCalc = this.calculateFinalPrice(prod, (currentInputVal || 1) + inCart, promoData.price);
             const finalLimit = Math.min(Math.max(0, max - inCart), Math.max(0, physicalStock - inCart));
 
-            // --- AJOUT : PRÉPARATION DES VARIATIONS POUR L'AFFICHAGE ---
             let specsList = null;
             if (prod.variationInfo) {
-                // On transforme "Color: Blue, Size: M" en tableau pour la boucle template
                 specsList = prod.variationInfo.split(', ').map(spec => {
                     return { key: spec, label: spec, cssClass: 'spec-pill' };
                 });
             }
-            // -----------------------------------------------------------
 
             return {
                 ...prod, 
@@ -273,7 +248,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                 stockClass: stockState.cssClass,
                 tierList: this.generateDynamicTiers(prod, (currentInputVal || 1) + inCart, promoData.price),
                 ruleList: this.generateRuleItems({ minQty: min, maxQty: max, increment: inc }, currentInputVal, inCart),
-                specsList: specsList, // <--- On passe la liste des specs au template
+                specsList: specsList, 
                 inputClass: hasError ? 'qty-input-field has-error' : 'qty-input-field',
                 productUrl: `/product/${pId}`
             };
@@ -281,7 +256,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     }
 
    // --- ECOUTE EVENEMENT CHAT IA ---
-    handleAiAddProduct(event) {
+    async handleAiAddProduct(event) {
         const { sku, quantity } = event.detail;
         
         const productFound = this.rawProductData.find(p => 
@@ -291,20 +266,29 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         if (productFound) {
             const pId = productFound.id;
             const currentQty = parseFloat(this.inputQty[pId] || 0);
-            
             const rawNewQty = currentQty + quantity;
             const newQty = Math.max(0, rawNewQty); 
 
-            if (newQty === 0) {
-                delete this.inputQty[pId];
-            } else {
-                this.inputQty[pId] = String(newQty);
-            }
+            if (newQty === 0) { delete this.inputQty[pId]; } 
+            else { this.inputQty[pId] = String(newQty); }
 
             this.buildGrid(); 
             
             if (quantity !== 0) {
                 this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
+                
+                // === SCENARIO 1 : RECO VIA CHAT ===
+                // On déclenche la reco seulement pour l'ajout (positif)
+                if (quantity > 0) {
+                    const recs = await this.getRecommendationsData([pId]);
+                    if (recs.length > 0) {
+                        const chatComp = this.querySelector('c-b2b-ai-assistant');
+                        if(chatComp) {
+                            // On demande à l'IA de confirmer l'ajout + proposer les recos
+                            chatComp.triggerAiRecommendation(productFound.name, recs);
+                        }
+                    }
+                }
             }
         } else {
             this.showToast('Warning', `Product with SKU ${sku} is not in the current list view.`, 'warning');
@@ -461,7 +445,15 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         
         try {
             const itemsMap = {};
-            for (const [pId, qtyStr] of Object.entries(this.inputQty)) { const qty = parseFloat(qtyStr); if (qty > 0) itemsMap[pId] = qty; }
+            const addedIds = []; 
+
+            for (const [pId, qtyStr] of Object.entries(this.inputQty)) { 
+                const qty = parseFloat(qtyStr); 
+                if (qty > 0) {
+                    itemsMap[pId] = qty;
+                    addedIds.push(pId);
+                }
+            }
             await addItemsToCart({ communityId: communityId, effectiveAccountId: this.effectiveAccountId, itemsMap: itemsMap });
             for (const [pId, qty] of Object.entries(itemsMap)) { this.cartDataMap[pId] = (parseFloat(this.cartDataMap[pId] || 0) + qty); }
             this.inputQty = {};
@@ -469,8 +461,114 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             this.showToast('Success', 'Items added to cart.', 'success');
             await refreshCartSummary();
             this.dispatchEvent(new CustomEvent('cartchanged'));
+
+            // === SCENARIO 2 : RECO VIA GRILLE ===
+            if (addedIds.length > 0) {
+                // On récupère les recos, puis on demande à l'IA de parler
+                const recs = await this.getRecommendationsData(addedIds);
+                if (recs.length > 0) {
+                    // FIX: renderMode='light' -> utiliser this.querySelector
+                    const chatComp = this.querySelector('c-b2b-ai-assistant');
+                    if (chatComp) {
+                        chatComp.triggerAiRecommendation('items', recs);
+                    }
+                }
+            }
+
         } catch (error) { this.showToast('Error', error.body?.message || 'Error adding to cart.', 'error'); this.fetchCartDataAndRebuild(false); } 
         finally { this.isSaving = false; }
+    }
+
+    // --- METHODE UTILITAIRE : RECUPERE LES DONNEES DE RECO (SANS AFFICHAGE DIRECT) ---
+    async getRecommendationsData(anchorIds) {
+        console.log('🕵️ [DEBUG] 1. getRecommendationsData avec IDs:', anchorIds);
+
+        if (!anchorIds || anchorIds.length === 0) return [];
+
+        try {
+            // 1. Appel API Standard v64
+            let recData = null;
+            try {
+                recData = await getProductRecommendations({
+                    recommender: 'CustomersWhoBoughtAlsoBought',
+                    anchorValues: anchorIds,
+                    effectiveAccountId: this.effectiveAccountId
+                });
+                console.log('🕵️ [DEBUG] 2. Réponse API Einstein:', JSON.stringify(recData));
+            } catch (apiErr) {
+                console.warn('⚠️ [DEBUG] Erreur API Einstein (Normale en Sandbox):', apiErr);
+            }
+
+            let recProducts = [];
+            let idsForPricing = [];
+
+            // 2. LOGIQUE DE SIMULATION (SI API VIDE)
+            const hasApiResults = recData && recData.recommendations && recData.recommendations.length > 0;
+            
+            if (!hasApiResults) {
+                console.warn('⚠️ [DEBUG] API vide... -> ACTIVATION MODE SIMULATION');
+                if (this.masterCatalogData && this.masterCatalogData.length > 0) {
+                    const candidates = this.masterCatalogData.filter(p => !anchorIds.includes(p.id));
+                    const simulated = candidates.sort(() => 0.5 - Math.random()).slice(0, 2);
+                    simulated.forEach(p => { recProducts.push({ ...p }); idsForPricing.push(p.id); });
+                }
+            } 
+            else {
+                recData.recommendations.forEach(rec => {
+                    const existing = this.masterCatalogData.find(p => p.id === rec.id);
+                    if (existing) { recProducts.push({ ...existing }); idsForPricing.push(existing.id); } 
+                    else {
+                        recProducts.push({
+                            id: rec.id, name: rec.name, sku: rec.sku,
+                            imgUrl: rec.defaultImage ? resolve(rec.defaultImage.url) : null,
+                            unitPrice: rec.prices ? rec.prices.unitPrice : 0,
+                            variationInfo: null
+                        });
+                        idsForPricing.push(rec.id);
+                    }
+                });
+            }
+
+            if (recProducts.length === 0) return [];
+
+            // 3. Récupération des Prix Temps Réel
+            if (idsForPricing.length > 0) {
+                const productIdsInput = idsForPricing.map(id => ({ productId: id }));
+                const pricingResult = await getPromotionPricingCollection({ 
+                    webstoreId: this.webstoreId, effectiveAccountId: this.effectiveAccountId, products: productIdsInput 
+                });
+
+                const recPromoMap = {};
+                if (pricingResult?.promotionProductEvaluationResults) {
+                    pricingResult.promotionProductEvaluationResults.forEach(item => {
+                        const info = { price: parseFloat(item.promotionalPrice) || null };
+                        if (item.promotionPriceAdjustmentList?.[0]?.displayName) info.name = item.promotionPriceAdjustmentList[0].displayName;
+                        else if (item.promotionPriceAdjustmentList?.[0]?.adjustmentValue) info.name = 'Promotion';
+                        if (info.name || info.price !== null) recPromoMap[item.productId] = info;
+                    });
+                }
+
+                return recProducts.map(prod => {
+                    const promoData = recPromoMap[prod.id] || {};
+                    const priceCalc = this.calculateFinalPrice(prod, 1, promoData.price);
+                    
+                    return {
+                        id: prod.id,
+                        name: prod.name,
+                        sku: prod.sku,
+                        displayUnitPrice: priceCalc.unitPrice,
+                        imgUrl: prod.imgUrl,
+                        variationInfo: prod.variationInfo,
+                        promoName: promoData.name
+                    };
+                });
+            }
+            return recProducts;
+
+        } catch (e) {
+            console.error('❌ [DEBUG] Erreur getRecommendationsData:', e);
+            return [];
+        }
     }
 
     showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }

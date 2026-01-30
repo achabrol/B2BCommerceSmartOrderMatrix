@@ -1,6 +1,6 @@
 /**
  * @description Contrôleur B2B Order Matrix
- * VERSION CORRIGÉE : Filtre strict pour exclure les champs techniques "External ID" des variations.
+ * VERSION FINALE : Prompt conservé + Instruction "System Context" ajoutée.
  */
 public without sharing class B2BCommerceOrderMatrixController {
 
@@ -138,7 +138,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return responseMap;
     }
 
-    // --- HELPER PRINCIPAL (SCANNER DYNAMIQUE INTÉGRÉ) ---
+    // --- HELPER PRINCIPAL (INCHANGÉ) ---
     private static Map<String, Object> buildResponseFromSummaries(List<ConnectApi.ProductSummary> summaries, String webstoreId, String accountId) {
         Map<String, Object> responseMap = new Map<String, Object>();
         if (summaries == null || summaries.isEmpty()) {
@@ -219,8 +219,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return responseMap;
     }
 
-    // --- SCANNER DYNAMIQUE CORRIGÉ ---
-    // Exclut maintenant les champs "External ID" même s'ils sont Custom
+    // --- HELPER VARIATIONS (INCHANGÉ) ---
     private static Map<String, String> getVariationInfoMapDynamic(Set<String> productIds) {
         Map<String, String> results = new Map<String, String>();
         if (productIds.isEmpty()) return results;
@@ -230,11 +229,8 @@ public without sharing class B2BCommerceOrderMatrixController {
         
         for (String fieldName : fieldMap.keySet()) {
             Schema.DescribeFieldResult dfr = fieldMap.get(fieldName).getDescribe();
-            
-            // On ne prend que les champs Custom (__c)
             if (dfr.isCustom()) {
                 String label = dfr.getLabel();
-                // FIX : Si le label contient "External ID", on l'ignore (champ technique)
                 if (!label.containsIgnoreCase('External ID')) {
                     variationFields.add(dfr.getName());
                 }
@@ -255,7 +251,6 @@ public without sharing class B2BCommerceOrderMatrixController {
                         Object val = attr.get(field);
                         if (val != null) {
                             String label = fieldMap.get(field).getDescribe().getLabel();
-                            // Double sécurité
                             if (!label.containsIgnoreCase('External ID')) {
                                 activeVars.add(label + ': ' + String.valueOf(val));
                             }
@@ -350,7 +345,6 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
         return null;
     }
-    // ...
 
     // --- 5. EINSTEIN AI CHAT ---
     @AuraEnabled
@@ -381,8 +375,15 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '   - Mention differences briefly (e.g., "I have it in Blue and Red") but let the cards show details.\n';
             prompt += '   - Use the USER\'S LANGUAGE (e.g. French, English).\n';
 
-            // 3. ACTIONS & INTENTS (CORRIGÉ & ROBUSTE)
-            prompt += '3. ACTIONS & INTENTS (CRITICAL RULES):\n';
+            // --- NOUVELLE RÈGLE AJOUTÉE : SYSTEM CONTEXT ---
+            prompt += '3. SCENARIO: SYSTEM_CONTEXT (Cross-Sell):\n';
+            prompt += '   - If the user input starts with "SYSTEM_CONTEXT:", it means the user performed an action (like adding to cart) and the system found cross-sell items.\n';
+            prompt += '   - YOUR JOB: Acknowledge the action (e.g., "Added to cart") AND naturally suggest the recommended items provided in the context.\n';
+            prompt += '   - Example: "Great choice! I\'ve added that to your order. Other customers often pair it with these items:"\n';
+            // -----------------------------------------------
+
+            // 3. ACTIONS & INTENTS (Anciennement 3, devient 4)
+            prompt += '4. ACTIONS & INTENTS (CRITICAL RULES):\n';
             
             prompt += '   - CASE 1: "ADD" (Relative)\n';
             prompt += '     User says: "Add 5", "Plus 5", "Put 5 more".\n';
@@ -400,7 +401,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '   - CASE 4: "REMOVE ALL"\n';
             prompt += '     -> OUTPUT: action="set", quantity=0.\n';
 
-            prompt += '4. OUTPUT FORMAT (JSON ONLY):\n';
+            prompt += '5. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
             prompt += '     "message": "Short text summary", \n';
             prompt += '     "items": [ \n';
