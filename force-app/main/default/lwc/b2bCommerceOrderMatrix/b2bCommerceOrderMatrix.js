@@ -2,7 +2,7 @@ import { LightningElement, wire, api, track } from 'lwc';
 import { AppContextAdapter, SessionContextAdapter } from 'commerce/contextApi';
 import { CartSummaryAdapter, refreshCartSummary } from 'commerce/cartApi';
 import { getPromotionPricingCollection } from 'commerce/promotionApi';
-// Import API Standard v64
+// Import API Standard v64 (Nécessaire pour les recos)
 import { getProductRecommendations } from 'commerce/productApi';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import { resolve } from 'experience/resourceResolver';
@@ -36,6 +36,11 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     rawProductData = [];
     orderItemsCache = {}; 
     
+    // --- CACHE POUR RECOMMANDATIONS (POUR LES RETROUVER SI HORS GRILLE) ---
+    // Essentiel pour que l'IA puisse "voir" et ajouter les produits qu'elle a recommandés
+    recoProductCache = []; 
+    // ----------------------------------------------------------------------
+
     searchTerm = ''; 
     webstoreId;
     effectiveAccountId;
@@ -45,6 +50,11 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     // Gestion d'état
     currentSourceValue = SOURCE_CATALOG;
     @track pastOrdersList = []; 
+
+    // Variables Debounce (100ms) pour éviter le spam de requêtes IA
+    _recoTimer;                 
+    _recoPendingIds = new Set(); 
+    _recoPendingNames = [];      
 
     // --- GETTERS ---
     get productCount() { return this.products ? this.products.length : 0; }
@@ -121,6 +131,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             const result = await getAllActiveProducts({ communityId: communityId, effectiveAccountId: this.effectiveAccountId });
             if (result.error) { 
                 this.error = result.error; 
+                console.error('❌ Erreur retournée par Apex :', result.error);
             } else {
                 const unsortedProducts = result.products || [];
                 unsortedProducts.sort((a, b) => {
@@ -139,6 +150,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             }
         } catch (error) { 
             this.error = 'Unable to load products.'; 
+            console.error('❌ JS Exception :', error); 
         } finally { 
             this.isLoading = false; 
         }
@@ -255,13 +267,23 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         });
     }
 
-   // --- ECOUTE EVENEMENT CHAT IA ---
+   // --- MODIFICATION : AJOUT VIA CHAT (Support Reco Cache) ---
     async handleAiAddProduct(event) {
-        const { sku, quantity } = event.detail;
+        // --- 1. Récupération du flag anti-reco (isRecommendation) ---
+        const { sku, quantity, isRecommendation } = event.detail;
         
-        const productFound = this.rawProductData.find(p => 
+        // 1. Chercher dans la grille principale
+        let productFound = this.rawProductData.find(p => 
             (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
         );
+
+        // 2. Si pas trouvé, chercher dans le cache des recommandations
+        if (!productFound && this.recoProductCache.length > 0) {
+            productFound = this.recoProductCache.find(p => 
+                (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
+            );
+            console.log('🔎 Recherche Reco Cache pour', sku, 'Trouvé ?', !!productFound);
+        }
 
         if (productFound) {
             const pId = productFound.id;
@@ -272,30 +294,180 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
             if (newQty === 0) { delete this.inputQty[pId]; } 
             else { this.inputQty[pId] = String(newQty); }
 
-            this.buildGrid(); 
+            // Si c'est un produit de la grille, on refresh l'affichage
+            const isInGrid = this.rawProductData.some(p => p.id === pId);
+            if (isInGrid) {
+                this.buildGrid(); 
+            }
             
             if (quantity !== 0) {
-                this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
-                
-                // === SCENARIO 1 : RECO VIA CHAT ===
-                // On déclenche la reco seulement pour l'ajout (positif)
+                // AJOUT REEL AU PANIER (OBLIGATOIRE POUR HORS GRILLE)
+                if (!isInGrid && quantity > 0) {
+                    try {
+                        const itemsMap = {};
+                        itemsMap[pId] = quantity;
+                        await addItemsToCart({ 
+                            communityId: communityId, 
+                            effectiveAccountId: this.effectiveAccountId, 
+                            itemsMap: itemsMap 
+                        });
+                        this.showToast('Success', `${productFound.name} added to cart.`, 'success');
+                        await refreshCartSummary();
+                    } catch(e) { console.error('Add Reco Error', e); }
+                } else if (isInGrid) {
+                    this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
+                }
+
+                // === DECLENCHEMENT RECO SUIVANTE AVEC DEBOUNCE (STOP SI C'EST DEJA UNE RECO) ===
                 if (quantity > 0) {
-                    const recs = await this.getRecommendationsData([pId]);
-                    if (recs.length > 0) {
-                        const chatComp = this.querySelector('c-b2b-ai-assistant');
-                        if(chatComp) {
-                            // On demande à l'IA de confirmer l'ajout + proposer les recos
-                            chatComp.triggerAiRecommendation(productFound.name, recs);
-                        }
+                    if (isRecommendation) {
+                        console.log('🛑 Stop Reco Loop: Ce produit est une recommandation, pas de nouvelle reco.');
+                    } else {
+                        this.scheduleAiRecommendation(pId, productFound.name);
                     }
                 }
             }
         } else {
-            this.showToast('Warning', `Product with SKU ${sku} is not in the current list view.`, 'warning');
+            this.showToast('Warning', `Product with SKU ${sku} not found available.`, 'warning');
         }
     }
 
-    // --- HELPERS (Inchangés) ---
+    // --- DEBOUNCE (100ms) ---
+    scheduleAiRecommendation(productId, productName) {
+        this._recoPendingIds.add(productId);
+        this._recoPendingNames.push(productName);
+
+        if (this._recoTimer) {
+            clearTimeout(this._recoTimer);
+        }
+
+        this._recoTimer = setTimeout(() => {
+            this.processBufferedAiRecommendations();
+        }, 100); 
+    }
+
+    async processBufferedAiRecommendations() {
+        const idsToProcess = Array.from(this._recoPendingIds);
+        const namesToProcess = [...this._recoPendingNames]; 
+        
+        this._recoPendingIds.clear();
+        this._recoPendingNames = [];
+        this._recoTimer = null;
+
+        if (idsToProcess.length === 0) return;
+
+        console.log(`🤖 [DEBOUNCE] Traitement groupé:`, namesToProcess);
+
+        const recs = await this.getRecommendationsData(idsToProcess);
+
+        if (recs.length > 0) {
+            const chatComp = this.querySelector('c-b2b-ai-assistant');
+            if(chatComp) {
+                let groupName = namesToProcess.length > 1 
+                    ? `${namesToProcess.length} items` 
+                    : namesToProcess[0];
+
+                chatComp.triggerAiRecommendation(groupName, recs);
+            }
+        }
+    }
+
+    // --- METHODE UTILITAIRE : RECUPERE LES DONNEES DE RECO ---
+    async getRecommendationsData(anchorIds) {
+        if (!anchorIds || anchorIds.length === 0) return [];
+
+        try {
+            // 1. Appel API Standard v64
+            let recData = null;
+            try {
+                recData = await getProductRecommendations({
+                    recommender: 'CustomersWhoBoughtAlsoBought',
+                    anchorValues: anchorIds,
+                    effectiveAccountId: this.effectiveAccountId
+                });
+            } catch (apiErr) { console.warn('API Reco Error:', apiErr); }
+
+            let recProducts = [];
+            let idsForPricing = [];
+
+            // 2. Traitement / Simulation
+            const hasApiResults = recData && recData.recommendations && recData.recommendations.length > 0;
+            
+            if (!hasApiResults) {
+                // Simulation
+                if (this.masterCatalogData && this.masterCatalogData.length > 0) {
+                    const candidates = this.masterCatalogData.filter(p => !anchorIds.includes(p.id));
+                    const simulated = candidates.sort(() => 0.5 - Math.random()).slice(0, 2);
+                    simulated.forEach(p => { recProducts.push({ ...p }); idsForPricing.push(p.id); });
+                }
+            } 
+            else {
+                recData.recommendations.forEach(rec => {
+                    const existing = this.masterCatalogData.find(p => p.id === rec.id);
+                    if (existing) { recProducts.push({ ...existing }); idsForPricing.push(existing.id); } 
+                    else {
+                        recProducts.push({
+                            id: rec.id, name: rec.name, sku: rec.sku,
+                            imgUrl: rec.defaultImage ? resolve(rec.defaultImage.url) : null,
+                            unitPrice: rec.prices ? rec.prices.unitPrice : 0,
+                            variationInfo: null
+                        });
+                        idsForPricing.push(rec.id);
+                    }
+                });
+            }
+
+            if (recProducts.length === 0) return [];
+
+            // 3. Récupération des Prix Temps Réel
+            if (idsForPricing.length > 0) {
+                const productIdsInput = idsForPricing.map(id => ({ productId: id }));
+                const pricingResult = await getPromotionPricingCollection({ 
+                    webstoreId: this.webstoreId, effectiveAccountId: this.effectiveAccountId, products: productIdsInput 
+                });
+
+                const recPromoMap = {};
+                if (pricingResult?.promotionProductEvaluationResults) {
+                    pricingResult.promotionProductEvaluationResults.forEach(item => {
+                        const info = { price: parseFloat(item.promotionalPrice) || null };
+                        if (item.promotionPriceAdjustmentList?.[0]?.displayName) info.name = item.promotionPriceAdjustmentList[0].displayName;
+                        else if (item.promotionPriceAdjustmentList?.[0]?.adjustmentValue) info.name = 'Promotion';
+                        recPromoMap[item.productId] = info;
+                    });
+                }
+
+                recProducts = recProducts.map(prod => {
+                    const promoData = recPromoMap[prod.id] || {};
+                    const priceCalc = this.calculateFinalPrice(prod, 1, promoData.price);
+                    
+                    return {
+                        id: prod.id,
+                        name: prod.name,
+                        sku: prod.sku,
+                        displayUnitPrice: priceCalc.unitPrice,
+                        imgUrl: prod.imgUrl,
+                        variationInfo: prod.variationInfo,
+                        promoName: promoData.name
+                    };
+                });
+            }
+
+            // === REMPLISSAGE DU CACHE DE RECO (CRUCIAL POUR SUIVI) ===
+            recProducts.forEach(newRec => {
+                if (!this.recoProductCache.some(cache => cache.id === newRec.id)) {
+                    this.recoProductCache.push(newRec);
+                }
+            });
+            // =========================================================
+
+            return recProducts;
+
+        } catch (e) {
+            console.error('❌ [DEBUG] Erreur getRecommendationsData:', e);
+            return [];
+        }
+    }
+
     async fetchPromotions() {
         if (!this.rawProductData || !this.webstoreId) return;
         const productIdsInput = this.rawProductData.map(p => ({ productId: p.id }));
@@ -428,147 +600,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         if (newVal === 0) delete this.inputQty[prodId];
         else this.inputQty[prodId] = String(newVal);
         this.buildGrid();
-    }
-
-    async handleAddToCart() {
-        if (this._isPreview || this.isSaving) return;
-        this.isSaving = true;
-        const hasItems = Object.values(this.inputQty).some(val => val && parseFloat(val) > 0);
-        
-        if (this.hasErrors) {
-            this.showToast('Error', 'Please correct invalid quantities (red fields).', 'error');
-            this.isSaving = false;
-            return;
-        }
-
-        if (!hasItems) { this.showToast('Warning', 'Please select at least one item.', 'warning'); this.isSaving = false; return; }
-        
-        try {
-            const itemsMap = {};
-            const addedIds = []; 
-
-            for (const [pId, qtyStr] of Object.entries(this.inputQty)) { 
-                const qty = parseFloat(qtyStr); 
-                if (qty > 0) {
-                    itemsMap[pId] = qty;
-                    addedIds.push(pId);
-                }
-            }
-            await addItemsToCart({ communityId: communityId, effectiveAccountId: this.effectiveAccountId, itemsMap: itemsMap });
-            for (const [pId, qty] of Object.entries(itemsMap)) { this.cartDataMap[pId] = (parseFloat(this.cartDataMap[pId] || 0) + qty); }
-            this.inputQty = {};
-            this.buildGrid(); 
-            this.showToast('Success', 'Items added to cart.', 'success');
-            await refreshCartSummary();
-            this.dispatchEvent(new CustomEvent('cartchanged'));
-
-            // === SCENARIO 2 : RECO VIA GRILLE ===
-            if (addedIds.length > 0) {
-                // On récupère les recos, puis on demande à l'IA de parler
-                const recs = await this.getRecommendationsData(addedIds);
-                if (recs.length > 0) {
-                    // FIX: renderMode='light' -> utiliser this.querySelector
-                    const chatComp = this.querySelector('c-b2b-ai-assistant');
-                    if (chatComp) {
-                        chatComp.triggerAiRecommendation('items', recs);
-                    }
-                }
-            }
-
-        } catch (error) { this.showToast('Error', error.body?.message || 'Error adding to cart.', 'error'); this.fetchCartDataAndRebuild(false); } 
-        finally { this.isSaving = false; }
-    }
-
-    // --- METHODE UTILITAIRE : RECUPERE LES DONNEES DE RECO (SANS AFFICHAGE DIRECT) ---
-    async getRecommendationsData(anchorIds) {
-        console.log('🕵️ [DEBUG] 1. getRecommendationsData avec IDs:', anchorIds);
-
-        if (!anchorIds || anchorIds.length === 0) return [];
-
-        try {
-            // 1. Appel API Standard v64
-            let recData = null;
-            try {
-                recData = await getProductRecommendations({
-                    recommender: 'CustomersWhoBoughtAlsoBought',
-                    anchorValues: anchorIds,
-                    effectiveAccountId: this.effectiveAccountId
-                });
-                console.log('🕵️ [DEBUG] 2. Réponse API Einstein:', JSON.stringify(recData));
-            } catch (apiErr) {
-                console.warn('⚠️ [DEBUG] Erreur API Einstein (Normale en Sandbox):', apiErr);
-            }
-
-            let recProducts = [];
-            let idsForPricing = [];
-
-            // 2. LOGIQUE DE SIMULATION (SI API VIDE)
-            const hasApiResults = recData && recData.recommendations && recData.recommendations.length > 0;
-            
-            if (!hasApiResults) {
-                console.warn('⚠️ [DEBUG] API vide... -> ACTIVATION MODE SIMULATION');
-                if (this.masterCatalogData && this.masterCatalogData.length > 0) {
-                    const candidates = this.masterCatalogData.filter(p => !anchorIds.includes(p.id));
-                    const simulated = candidates.sort(() => 0.5 - Math.random()).slice(0, 2);
-                    simulated.forEach(p => { recProducts.push({ ...p }); idsForPricing.push(p.id); });
-                }
-            } 
-            else {
-                recData.recommendations.forEach(rec => {
-                    const existing = this.masterCatalogData.find(p => p.id === rec.id);
-                    if (existing) { recProducts.push({ ...existing }); idsForPricing.push(existing.id); } 
-                    else {
-                        recProducts.push({
-                            id: rec.id, name: rec.name, sku: rec.sku,
-                            imgUrl: rec.defaultImage ? resolve(rec.defaultImage.url) : null,
-                            unitPrice: rec.prices ? rec.prices.unitPrice : 0,
-                            variationInfo: null
-                        });
-                        idsForPricing.push(rec.id);
-                    }
-                });
-            }
-
-            if (recProducts.length === 0) return [];
-
-            // 3. Récupération des Prix Temps Réel
-            if (idsForPricing.length > 0) {
-                const productIdsInput = idsForPricing.map(id => ({ productId: id }));
-                const pricingResult = await getPromotionPricingCollection({ 
-                    webstoreId: this.webstoreId, effectiveAccountId: this.effectiveAccountId, products: productIdsInput 
-                });
-
-                const recPromoMap = {};
-                if (pricingResult?.promotionProductEvaluationResults) {
-                    pricingResult.promotionProductEvaluationResults.forEach(item => {
-                        const info = { price: parseFloat(item.promotionalPrice) || null };
-                        if (item.promotionPriceAdjustmentList?.[0]?.displayName) info.name = item.promotionPriceAdjustmentList[0].displayName;
-                        else if (item.promotionPriceAdjustmentList?.[0]?.adjustmentValue) info.name = 'Promotion';
-                        if (info.name || info.price !== null) recPromoMap[item.productId] = info;
-                    });
-                }
-
-                return recProducts.map(prod => {
-                    const promoData = recPromoMap[prod.id] || {};
-                    const priceCalc = this.calculateFinalPrice(prod, 1, promoData.price);
-                    
-                    return {
-                        id: prod.id,
-                        name: prod.name,
-                        sku: prod.sku,
-                        displayUnitPrice: priceCalc.unitPrice,
-                        imgUrl: prod.imgUrl,
-                        variationInfo: prod.variationInfo,
-                        promoName: promoData.name
-                    };
-                });
-            }
-            return recProducts;
-
-        } catch (e) {
-            console.error('❌ [DEBUG] Erreur getRecommendationsData:', e);
-            return [];
-        }
     }
 
     showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }

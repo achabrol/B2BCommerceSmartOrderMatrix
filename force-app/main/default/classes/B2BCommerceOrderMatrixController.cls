@@ -1,6 +1,6 @@
 /**
  * @description Contrôleur B2B Order Matrix
- * VERSION FINALE : Prompt conservé + Instruction "System Context" ajoutée.
+ * VERSION DEBUG & CONTEXTE RENFORCÉ
  */
 public without sharing class B2BCommerceOrderMatrixController {
 
@@ -346,7 +346,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         return null;
     }
 
-    // --- 5. EINSTEIN AI CHAT ---
+  // --- 5. EINSTEIN AI CHAT ---
     @AuraEnabled
     public static Map<String, Object> askEinstein(String userMessage, String productContextString) {
         Map<String, Object> result = new Map<String, Object>();
@@ -363,7 +363,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             
             // 1. VISUAL CARDS
             prompt += '1. VISUAL CARDS (VERY IMPORTANT):\n';
-            prompt += '   - If you recommend or discuss specific products, YOU MUST include them in the "items" array in the JSON.\n';
+            prompt += '   - If you recommend or discuss specific products, YOU MUST include them in the "items" array in the JSON output.\n';
             prompt += '   - Use action="search" for recommendations.\n';
             prompt += '   - This will automatically display a visual card with image, price, and specs.\n';
             
@@ -375,14 +375,14 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '   - Mention differences briefly (e.g., "I have it in Blue and Red") but let the cards show details.\n';
             prompt += '   - Use the USER\'S LANGUAGE (e.g. French, English).\n';
 
-            // --- NOUVELLE RÈGLE AJOUTÉE : SYSTEM CONTEXT ---
+            // --- NOUVEAU CASE 3 : SYSTEM CONTEXT (Cross-Sell) ---
             prompt += '3. SCENARIO: SYSTEM_CONTEXT (Cross-Sell):\n';
             prompt += '   - If the user input starts with "SYSTEM_CONTEXT:", it means the user performed an action (like adding to cart) and the system found cross-sell items.\n';
             prompt += '   - YOUR JOB: Acknowledge the action (e.g., "Added to cart") AND naturally suggest the recommended items provided in the context.\n';
             prompt += '   - Example: "Great choice! I\'ve added that to your order. Other customers often pair it with these items:"\n';
-            // -----------------------------------------------
+            // ----------------------------------------------------
 
-            // 3. ACTIONS & INTENTS (Anciennement 3, devient 4)
+            // 4. ACTIONS & INTENTS (CRITICAL RULES)
             prompt += '4. ACTIONS & INTENTS (CRITICAL RULES):\n';
             
             prompt += '   - CASE 1: "ADD" (Relative)\n';
@@ -401,6 +401,14 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '   - CASE 4: "REMOVE ALL"\n';
             prompt += '     -> OUTPUT: action="set", quantity=0.\n';
 
+            // --- MODIFICATION MAJEURE DU CASE 5 ---
+            prompt += '   - CASE 5: "ADD THEM" / "ADD RECOMMENDATIONS" / "ADD OF EACH" (Contextual):\n';
+            prompt += '     IF the user responds to a recommendation (e.g., "Add 5 of each", "Yes please"):\n';
+            prompt += '     1. STRICTLY IGNORE any item where "selected" is greater than 0. Do NOT output them.\n';
+            prompt += '     2. TARGET ONLY items where "desc" contains "(Recommended)".\n';
+            prompt += '     3. IF no recommended items found, ask for clarification.\n';
+            // --------------------------------------
+
             prompt += '5. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
             prompt += '     "message": "Short text summary", \n';
@@ -414,7 +422,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             generationsInput.promptTextorId = prompt;
             generationsInput.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
             generationsInput.additionalConfig.maxTokens = 800;
-            generationsInput.additionalConfig.temperature = 0.5; 
+            generationsInput.additionalConfig.temperature = 0.1; // Température réduite pour plus de rigueur
             generationsInput.additionalConfig.applicationName = 'PromptBuilderPreview';
             
             ConnectApi.EinsteinLLMGenerationsOutput generationsOutput = ConnectApi.EinsteinLLM.generateMessages(generationsInput);

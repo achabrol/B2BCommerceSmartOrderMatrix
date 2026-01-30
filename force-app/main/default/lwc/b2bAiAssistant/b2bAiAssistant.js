@@ -5,6 +5,10 @@ export default class B2bAiAssistant extends LightningElement {
     
     @api products = [];
 
+    // --- MEMOIRE CONTEXTUELLE DES RECOMMANDATIONS ---
+    activeRecommendations = []; 
+    // ------------------------------------------------
+
     @track messages = [
         { 
             id: 'welcome', 
@@ -22,24 +26,24 @@ export default class B2bAiAssistant extends LightningElement {
     handleInputChange(event) { this.userInput = event.target.value; }
     handleKeyUp(event) { if (event.key === 'Enter') this.handleSend(); }
 
-    // --- NOUVELLE LOGIQUE IA-DRIVEN (System Prompt) ---
+    // --- LOGIQUE IA-DRIVEN (System Prompt) ---
     @api async triggerAiRecommendation(addedItemName, recommendedItems) {
-        this.isTyping = true; // Montre que l'IA réfléchit
+        this.isTyping = true; 
 
-        // Construction du message système invisible
-        // On donne à l'IA ce que l'utilisateur a fait + les produits à recommander
+        // 1. Sauvegarde dans le contexte actif de l'assistant
+        this.activeRecommendations = recommendedItems || [];
+
         const systemPrompt = `SYSTEM_CONTEXT: The user successfully added "${addedItemName}" to their cart. 
         Based on this, the system recommends these specific Cross-Sell products: 
         ${JSON.stringify(recommendedItems)}. 
         INSTRUCTION: Inform the user that the item was added, then suggest these recommendations naturally using the provided data.`;
 
-        // On passe le catalogue complet (this.products) comme contexte global
-        // mais le systemPrompt donne le focus immédiat.
+        // Note: On passe le catalogue, mais le prompt système donne les détails spécifiques des recos
         const contextString = JSON.stringify(this.products); 
 
         try {
             const result = await askEinstein({ 
-                userMessage: systemPrompt, // L'IA reçoit ça comme une instruction interne
+                userMessage: systemPrompt, 
                 productContextString: contextString
             });
 
@@ -48,11 +52,9 @@ export default class B2bAiAssistant extends LightningElement {
             if (result.success) {
                 const aiData = JSON.parse(result.response);
                 
-                // L'IA a généré le texte ET les items à afficher
                 let cardsToDisplay = [];
                 if (aiData.items) {
                     cardsToDisplay = aiData.items.map(item => {
-                        // On retrouve les détails complets (Image, etc) 
                         const fullData = recommendedItems.find(r => r.sku === item.sku) || 
                                          this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
                         
@@ -61,7 +63,7 @@ export default class B2bAiAssistant extends LightningElement {
                                 id: fullData.id,
                                 name: fullData.name,
                                 sku: fullData.sku || fullData.StockKeepingUnit,
-                                price: fullData.displayUnitPrice || fullData.unitPrice,
+                                price: fullData.displayUnitPrice || fullData.unitPrice || fullData.price,
                                 imgUrl: fullData.imgUrl,
                                 promo: fullData.promoName || fullData.promo,
                                 currency: 'USD'
@@ -71,10 +73,9 @@ export default class B2bAiAssistant extends LightningElement {
                     }).filter(x => x !== null);
                 }
 
-                // Ajout du message IA
                 this.messages = [...this.messages, {
                     id: Date.now(),
-                    text: aiData.message, // Le texte généré par l'IA
+                    text: aiData.message, 
                     isAi: true,
                     products: cardsToDisplay.length > 0 ? cardsToDisplay : null,
                     wrapperClass: 'message-wrapper left',
@@ -101,6 +102,7 @@ export default class B2bAiAssistant extends LightningElement {
         this.isTyping = true;
         this.scrollToBottom();
 
+        // 1. Préparation du Contexte PRINCIPAL (Grille)
         const contextData = this.products.map(p => {
             let tierInfo = '';
             if (p.tierList && p.tierList.length > 0) {
@@ -109,19 +111,11 @@ export default class B2bAiAssistant extends LightningElement {
             
             const sellingPrice = p.displayUnitPrice || p.unitPrice; 
             let standardPrice = p.displayListPrice;
-            if (!standardPrice && sellingPrice !== p.unitPrice) {
-                standardPrice = p.unitPrice;
-            }
-
+            if (!standardPrice && sellingPrice !== p.unitPrice) { standardPrice = p.unitPrice; }
             let stockVal = 'Unlimited';
-            if (p.stock !== undefined && p.stock !== null && p.stock !== '') {
-                 stockVal = p.stock;
-            }
-
+            if (p.stock !== undefined && p.stock !== null && p.stock !== '') { stockVal = p.stock; }
             let enrichedDesc = p.Description || '';
-            if (p.variationInfo) {
-                enrichedDesc += ` (${p.variationInfo})`;
-            }
+            if (p.variationInfo) { enrichedDesc += ` (${p.variationInfo})`; }
 
             return {
                 name: p.name,
@@ -140,7 +134,41 @@ export default class B2bAiAssistant extends LightningElement {
             };
         });
 
+        // 2. FUSION : Ajouter les Recos Actives au contexte avec PRIORITÉ
+        if (this.activeRecommendations.length > 0) {
+            console.log('🕵️ [DEBUG AI] Injection des Recos dans le contexte JSON...');
+            
+            // On inverse l'ordre pour les mettre EN PREMIER (unshift)
+            [...this.activeRecommendations].reverse().forEach(reco => {
+                const existsIndex = contextData.findIndex(c => c.sku === reco.sku);
+                
+                let newItem = {
+                    name: reco.name,
+                    sku: reco.sku,
+                    // --- TAG SPECIAL POUR L'IA (CASE 5) ---
+                    desc: "(Recommended) " + (reco.variationInfo || "Cross-Sell Product"), 
+                    // -------------------------------------
+                    price: reco.displayUnitPrice || reco.price,
+                    stock: 'Available',
+                    selected: 0,
+                    inCart: 0
+                };
+
+                if (existsIndex !== -1) {
+                    // Si existe déjà, on le déplace en haut et on update la desc
+                    let existing = contextData[existsIndex];
+                    existing.desc = "(Recommended) " + existing.desc;
+                    contextData.splice(existsIndex, 1); // Retirer de l'ancienne position
+                    contextData.unshift(existing);      // Mettre en haut
+                } else {
+                    // Si nouveau, on ajoute en haut
+                    contextData.unshift(newItem);
+                }
+            });
+        }
+
         const contextString = JSON.stringify(contextData); 
+        console.log('🕵️ [DEBUG AI] JSON envoyé:', contextString);
 
         try {
             const result = await askEinstein({ 
@@ -159,9 +187,23 @@ export default class B2bAiAssistant extends LightningElement {
                     
                     if (aiData.items && Array.isArray(aiData.items)) {
                         aiData.items.forEach(item => {
-                            const foundProduct = this.products.find(p => 
+                            // 3. RECHERCHE ETENDUE (Grille OU Recos)
+                            let foundProduct = this.products.find(p => 
                                 (p.sku === item.sku) || (p.StockKeepingUnit === item.sku)
                             );
+
+                            // Si pas dans la grille, check dans les recos actives
+                            if (!foundProduct && this.activeRecommendations.length > 0) {
+                                foundProduct = this.activeRecommendations.find(r => r.sku === item.sku);
+                                if (foundProduct) {
+                                    // Mapping rapide pour uniformiser
+                                    foundProduct = {
+                                        ...foundProduct,
+                                        qtyValue: 0, 
+                                        StockKeepingUnit: foundProduct.sku 
+                                    };
+                                }
+                            }
 
                             if (foundProduct) {
                                 let finalQty = 0;
@@ -180,15 +222,29 @@ export default class B2bAiAssistant extends LightningElement {
                                     finalQty = qtyRaw;
                                 }
 
+                                // --- MODIFICATION : CHECK IS RECO ---
+                                const isFromReco = this.activeRecommendations.some(r => r.sku === item.sku);
+                                // ------------------------------------
+
                                 if (finalQty !== 0 && item.action !== 'search') {
                                     this.dispatchEvent(new CustomEvent('addproduct', {
                                         detail: { 
                                             sku: foundProduct.sku || foundProduct.StockKeepingUnit, 
-                                            quantity: finalQty 
+                                            quantity: finalQty,
+                                            isRecommendation: isFromReco // On passe l'info au parent
                                         }
                                     }));
                                 }
-                                productsToDisplay.push(foundProduct);
+                                
+                                productsToDisplay.push({
+                                    id: foundProduct.id,
+                                    name: foundProduct.name,
+                                    sku: foundProduct.sku || foundProduct.StockKeepingUnit,
+                                    price: foundProduct.displayUnitPrice || foundProduct.price,
+                                    imgUrl: foundProduct.imgUrl,
+                                    promo: foundProduct.promoName,
+                                    currency: 'USD'
+                                });
                             }
                         });
                     }
