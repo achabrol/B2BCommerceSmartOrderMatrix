@@ -2,8 +2,6 @@ import { LightningElement, wire, api, track } from 'lwc';
 import { AppContextAdapter, SessionContextAdapter } from 'commerce/contextApi';
 import { CartSummaryAdapter, refreshCartSummary } from 'commerce/cartApi';
 import { getPromotionPricingCollection } from 'commerce/promotionApi';
-// Import API Standard v64 (Nécessaire pour les recos)
-import { getProductRecommendations } from 'commerce/productApi';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import { resolve } from 'experience/resourceResolver';
 
@@ -13,9 +11,15 @@ import getOrderProducts from '@salesforce/apex/B2BCommerceOrderMatrixController.
 import getCartQuantities from '@salesforce/apex/B2BCommerceOrderMatrixController.getCartQuantities';
 import addItemsToCart from '@salesforce/apex/B2BCommerceOrderMatrixController.addItemsToCart';
 import communityId from '@salesforce/community/Id';
+import communityBasePath from '@salesforce/community/basePath'; // AJOUT IMPORT
 
 const SOURCE_CATALOG = 'catalog';
 
+/**
+ * @description Composant principal B2B Order Matrix.
+ * Affiche une grille de commande rapide avec calcul dynamique des prix (paliers, promos),
+ * gestion du stock et intégration avec le panier LWR.
+ */
 export default class B2bCommerceOrderMatrix extends LightningElement {
     static renderMode = 'light';
     
@@ -36,11 +40,6 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     rawProductData = [];
     orderItemsCache = {}; 
     
-    // --- CACHE POUR RECOMMANDATIONS (POUR LES RETROUVER SI HORS GRILLE) ---
-    // Essentiel pour que l'IA puisse "voir" et ajouter les produits qu'elle a recommandés
-    recoProductCache = []; 
-    // ----------------------------------------------------------------------
-
     searchTerm = ''; 
     webstoreId;
     effectiveAccountId;
@@ -51,10 +50,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     currentSourceValue = SOURCE_CATALOG;
     @track pastOrdersList = []; 
 
-    // Variables Debounce (100ms) pour éviter le spam de requêtes IA
-    _recoTimer;                 
-    _recoPendingIds = new Set(); 
-    _recoPendingNames = [];      
+    selectedOrderId = null;
+    fromDate = null;
+    toDate = null;
 
     // --- GETTERS ---
     get productCount() { return this.products ? this.products.length : 0; }
@@ -77,6 +75,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         return options;
     }
 
+    /**
+     * @description Convertit une chaîne de caractères en caractères Unicode gras mathématiques pour le style des options.
+     */
     toBold(text) {
         const diffDigit = 0x1D7CE - 48;
         const diffUpper = 0x1D400 - 65;
@@ -90,14 +91,23 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         }).join('');
     }
 
+    /**
+     * @description Lifecycle hook.
+     */
     connectedCallback() { console.log('🚀 [LWC] Component Initialized'); }
 
     @wire(AppContextAdapter) wiredAppContext({ data }) { if (data) { this.webstoreId = data.webstoreId; this.tryLoadData(); } }
     @wire(SessionContextAdapter) wiredSessionContext({ data }) { if (data) { this.effectiveAccountId = data.effectiveAccountId; this._isPreview = data.isPreview; this.tryLoadData(); } }
     @wire(CartSummaryAdapter) wiredCartSummary({ data }) { if (data) { this.activeCartId = data.cartId; if (this.rawProductData.length > 0) this.fetchCartDataAndRebuild(true); } }
 
+    /**
+     * @description Vérifie si le contexte (store, account) est prêt avant de lancer le chargement des données.
+     */
     tryLoadData() { if (this.webstoreId && this.effectiveAccountId) { this.loadData(); } }
 
+    /**
+     * @description Orchestre le chargement initial : historique des commandes en arrière-plan et catalogue produit au premier plan.
+     */
     async loadData() {
         this.error = null;
         this.loadPastOrdersBackground();
@@ -112,6 +122,10 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         }
     }
 
+    /**
+     * @description Charge l'historique des commandes via Apex sans bloquer l'interface utilisateur.
+     * Met en cache les items des commandes pour une réutilisation rapide.
+     */
     async loadPastOrdersBackground() {
         try {
             const result = await getPastOrders({ effectiveAccountId: this.effectiveAccountId, fromDate: null, toDate: null });
@@ -125,37 +139,60 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         } catch (e) { console.warn('Error loading past orders in background', e); }
     }
 
+    /**
+     * @description Charge la totalité des produits actifs du catalogue via Apex.
+     * Trie les résultats par nom.
+     */
     async loadCatalogProducts() {
         this.isLoading = true;
         try {
             const result = await getAllActiveProducts({ communityId: communityId, effectiveAccountId: this.effectiveAccountId });
+            
+            console.log('🔥 [APEX] Retour complet de getAllActiveProducts :', result);
+
             if (result.error) { 
                 this.error = result.error; 
                 console.error('❌ Erreur retournée par Apex :', result.error);
-            } else {
+            } 
+            else {
                 const unsortedProducts = result.products || [];
+                
+                if (unsortedProducts.length > 0) {
+                    console.log('📦 [PRODUIT 1] Structure brute :', unsortedProducts[0]);
+                    console.log('🔑 [CHAMPS DISPOS] :', Object.keys(unsortedProducts[0]));
+                } else {
+                    console.warn('⚠️ Aucun produit trouvé dans le catalogue.');
+                }
+
                 unsortedProducts.sort((a, b) => {
                     const nameA = (a.name || '').toLowerCase();
                     const nameB = (b.name || '').toLowerCase();
                     return nameA.localeCompare(nameB);
                 });
+
                 this.masterCatalogData = unsortedProducts;
                 this.rawProductData = [...this.masterCatalogData];
+                
                 if (this.rawProductData.length > 0) { 
                     await this.fetchCartDataAndRebuild(false); 
                     this.fetchPromotions(); 
-                } else { 
+                } 
+                else { 
                     this.buildGrid(); 
                 }
             }
         } catch (error) { 
             this.error = 'Unable to load products.'; 
             console.error('❌ JS Exception :', error); 
-        } finally { 
+        } 
+        finally { 
             this.isLoading = false; 
         }
     }
 
+    /**
+     * @description Gère le changement de source (Catalogue complet vs Commande passée).
+     */
     handleSourceChange(event) {
         const newValue = event.detail.value;
         this.currentSourceValue = newValue;
@@ -169,6 +206,10 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         }
     }
 
+    /**
+     * @description Charge les produits d'une commande spécifique. 
+     * Utilise le cache local si disponible, sinon appelle Apex.
+     */
     async loadOrderProducts(orderId) {
         if (!orderId) return;
         if (this.masterCatalogData.length === 0) { this.isLoading = true; await this.loadCatalogProducts(); }
@@ -181,6 +222,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                 orderItemIds.add(item.productId);
             });
             this.rawProductData = this.masterCatalogData.filter(p => orderItemIds.has(p.id));
+            this.rawProductData.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
             if (this.rawProductData.length > 0) { 
                 this.fetchCartDataAndRebuild(true); 
                 if (Object.keys(this.promoDataMap).length === 0) this.fetchPromotions();
@@ -204,6 +246,16 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         finally { this.isLoading = false; }
     }
 
+    // --- GRID BUILD ---
+
+    /**
+     * @description Construit la structure de données pour la grille UI en fusionnant :
+     * 1. Données produits (rawProductData)
+     * 2. Saisies utilisateur (inputQty)
+     * 3. État du panier (cartDataMap)
+     * 4. Promotions (promoDataMap)
+     * Applique également les filtres de recherche.
+     */
     buildGrid() {
         const term = this.searchTerm ? this.searchTerm.toLowerCase() : '';
         const filteredData = this.rawProductData.filter(p => {
@@ -260,214 +312,54 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
                 stockClass: stockState.cssClass,
                 tierList: this.generateDynamicTiers(prod, (currentInputVal || 1) + inCart, promoData.price),
                 ruleList: this.generateRuleItems({ minQty: min, maxQty: max, increment: inc }, currentInputVal, inCart),
-                specsList: specsList, 
+                specsList: specsList,
                 inputClass: hasError ? 'qty-input-field has-error' : 'qty-input-field',
-                productUrl: `/product/${pId}`
+                productUrl: communityBasePath + '/product/' + pId // URL MODIFIEE AVEC BASE PATH
             };
         });
     }
 
-   // --- MODIFICATION : AJOUT VIA CHAT (Support Reco Cache) ---
-    async handleAiAddProduct(event) {
-        // --- 1. Récupération du flag anti-reco (isRecommendation) ---
-        const { sku, quantity, isRecommendation } = event.detail;
+   // --- ECOUTE EVENEMENT CHAT IA ---
+
+    /**
+     * @description Écouteur d'événement pour les actions déclenchées par l'assistant IA.
+     * Met à jour les quantités d'input (inputQty) basé sur les intentions "Add/Remove/Set".
+     */
+    handleAiAddProduct(event) {
+        const { sku, quantity } = event.detail;
         
-        // 1. Chercher dans la grille principale
-        let productFound = this.rawProductData.find(p => 
+        const productFound = this.rawProductData.find(p => 
             (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
         );
-
-        // 2. Si pas trouvé, chercher dans le cache des recommandations
-        if (!productFound && this.recoProductCache.length > 0) {
-            productFound = this.recoProductCache.find(p => 
-                (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
-            );
-            console.log('🔎 Recherche Reco Cache pour', sku, 'Trouvé ?', !!productFound);
-        }
 
         if (productFound) {
             const pId = productFound.id;
             const currentQty = parseFloat(this.inputQty[pId] || 0);
+            
             const rawNewQty = currentQty + quantity;
             const newQty = Math.max(0, rawNewQty); 
 
-            if (newQty === 0) { delete this.inputQty[pId]; } 
-            else { this.inputQty[pId] = String(newQty); }
-
-            // Si c'est un produit de la grille, on refresh l'affichage
-            const isInGrid = this.rawProductData.some(p => p.id === pId);
-            if (isInGrid) {
-                this.buildGrid(); 
+            if (newQty === 0) {
+                delete this.inputQty[pId];
+            } else {
+                this.inputQty[pId] = String(newQty);
             }
+
+            this.buildGrid(); 
             
             if (quantity !== 0) {
-                // AJOUT REEL AU PANIER (OBLIGATOIRE POUR HORS GRILLE)
-                if (!isInGrid && quantity > 0) {
-                    try {
-                        const itemsMap = {};
-                        itemsMap[pId] = quantity;
-                        await addItemsToCart({ 
-                            communityId: communityId, 
-                            effectiveAccountId: this.effectiveAccountId, 
-                            itemsMap: itemsMap 
-                        });
-                        this.showToast('Success', `${productFound.name} added to cart.`, 'success');
-                        await refreshCartSummary();
-                    } catch(e) { console.error('Add Reco Error', e); }
-                } else if (isInGrid) {
-                    this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
-                }
-
-                // === DECLENCHEMENT RECO SUIVANTE AVEC DEBOUNCE (STOP SI C'EST DEJA UNE RECO) ===
-                if (quantity > 0) {
-                    if (isRecommendation) {
-                        console.log('🛑 Stop Reco Loop: Ce produit est une recommandation, pas de nouvelle reco.');
-                    } else {
-                        this.scheduleAiRecommendation(pId, productFound.name);
-                    }
-                }
+                this.showToast('Updated', `${productFound.name}: ${newQty} units.`, 'success');
             }
         } else {
-            this.showToast('Warning', `Product with SKU ${sku} not found available.`, 'warning');
+            this.showToast('Warning', `Product with SKU ${sku} is not in the current list view.`, 'warning');
         }
     }
 
-    // --- DEBOUNCE (100ms) ---
-    scheduleAiRecommendation(productId, productName) {
-        this._recoPendingIds.add(productId);
-        this._recoPendingNames.push(productName);
+    // --- HELPERS ---
 
-        if (this._recoTimer) {
-            clearTimeout(this._recoTimer);
-        }
-
-        this._recoTimer = setTimeout(() => {
-            this.processBufferedAiRecommendations();
-        }, 100); 
-    }
-
-    async processBufferedAiRecommendations() {
-        const idsToProcess = Array.from(this._recoPendingIds);
-        const namesToProcess = [...this._recoPendingNames]; 
-        
-        this._recoPendingIds.clear();
-        this._recoPendingNames = [];
-        this._recoTimer = null;
-
-        if (idsToProcess.length === 0) return;
-
-        console.log(`🤖 [DEBOUNCE] Traitement groupé:`, namesToProcess);
-
-        const recs = await this.getRecommendationsData(idsToProcess);
-
-        if (recs.length > 0) {
-            const chatComp = this.querySelector('c-b2b-ai-assistant');
-            if(chatComp) {
-                let groupName = namesToProcess.length > 1 
-                    ? `${namesToProcess.length} items` 
-                    : namesToProcess[0];
-
-                chatComp.triggerAiRecommendation(groupName, recs);
-            }
-        }
-    }
-
-    // --- METHODE UTILITAIRE : RECUPERE LES DONNEES DE RECO ---
-    async getRecommendationsData(anchorIds) {
-        if (!anchorIds || anchorIds.length === 0) return [];
-
-        try {
-            // 1. Appel API Standard v64
-            let recData = null;
-            try {
-                recData = await getProductRecommendations({
-                    recommender: 'CustomersWhoBoughtAlsoBought',
-                    anchorValues: anchorIds,
-                    effectiveAccountId: this.effectiveAccountId
-                });
-            } catch (apiErr) { console.warn('API Reco Error:', apiErr); }
-
-            let recProducts = [];
-            let idsForPricing = [];
-
-            // 2. Traitement / Simulation
-            const hasApiResults = recData && recData.recommendations && recData.recommendations.length > 0;
-            
-            if (!hasApiResults) {
-                // Simulation
-                if (this.masterCatalogData && this.masterCatalogData.length > 0) {
-                    const candidates = this.masterCatalogData.filter(p => !anchorIds.includes(p.id));
-                    const simulated = candidates.sort(() => 0.5 - Math.random()).slice(0, 2);
-                    simulated.forEach(p => { recProducts.push({ ...p }); idsForPricing.push(p.id); });
-                }
-            } 
-            else {
-                recData.recommendations.forEach(rec => {
-                    const existing = this.masterCatalogData.find(p => p.id === rec.id);
-                    if (existing) { recProducts.push({ ...existing }); idsForPricing.push(existing.id); } 
-                    else {
-                        recProducts.push({
-                            id: rec.id, name: rec.name, sku: rec.sku,
-                            imgUrl: rec.defaultImage ? resolve(rec.defaultImage.url) : null,
-                            unitPrice: rec.prices ? rec.prices.unitPrice : 0,
-                            variationInfo: null
-                        });
-                        idsForPricing.push(rec.id);
-                    }
-                });
-            }
-
-            if (recProducts.length === 0) return [];
-
-            // 3. Récupération des Prix Temps Réel
-            if (idsForPricing.length > 0) {
-                const productIdsInput = idsForPricing.map(id => ({ productId: id }));
-                const pricingResult = await getPromotionPricingCollection({ 
-                    webstoreId: this.webstoreId, effectiveAccountId: this.effectiveAccountId, products: productIdsInput 
-                });
-
-                const recPromoMap = {};
-                if (pricingResult?.promotionProductEvaluationResults) {
-                    pricingResult.promotionProductEvaluationResults.forEach(item => {
-                        const info = { price: parseFloat(item.promotionalPrice) || null };
-                        if (item.promotionPriceAdjustmentList?.[0]?.displayName) info.name = item.promotionPriceAdjustmentList[0].displayName;
-                        else if (item.promotionPriceAdjustmentList?.[0]?.adjustmentValue) info.name = 'Promotion';
-                        recPromoMap[item.productId] = info;
-                    });
-                }
-
-                recProducts = recProducts.map(prod => {
-                    const promoData = recPromoMap[prod.id] || {};
-                    const priceCalc = this.calculateFinalPrice(prod, 1, promoData.price);
-                    
-                    return {
-                        id: prod.id,
-                        name: prod.name,
-                        sku: prod.sku,
-                        displayUnitPrice: priceCalc.unitPrice,
-                        imgUrl: prod.imgUrl,
-                        variationInfo: prod.variationInfo,
-                        promoName: promoData.name
-                    };
-                });
-            }
-
-            // === REMPLISSAGE DU CACHE DE RECO (CRUCIAL POUR SUIVI) ===
-            recProducts.forEach(newRec => {
-                if (!this.recoProductCache.some(cache => cache.id === newRec.id)) {
-                    this.recoProductCache.push(newRec);
-                }
-            });
-            // =========================================================
-
-            return recProducts;
-
-        } catch (e) {
-            console.error('❌ [DEBUG] Erreur getRecommendationsData:', e);
-            return [];
-        }
-    }
-
+    /**
+     * @description Récupère les prix promotionnels via l'API Commerce Promotion.
+     */
     async fetchPromotions() {
         if (!this.rawProductData || !this.webstoreId) return;
         const productIdsInput = this.rawProductData.map(p => ({ productId: p.id }));
@@ -487,6 +379,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         } catch (e) { console.warn('Promo fetch failed', e); }
     }
 
+    /**
+     * @description Met à jour les quantités présentes dans le panier actif pour les produits affichés.
+     */
     async fetchCartDataAndRebuild(silentMode = false) {
         if (!this.rawProductData.length) return;
         if (!silentMode) this.isLoading = true;
@@ -500,6 +395,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     
     handleSearchChange(event) { this.searchTerm = event.target.value; this.buildGrid(); }
 
+    /**
+     * @description Génère les badges de règles (Min, Max, Incrément) pour l'affichage.
+     */
     generateRuleItems(details, currentInputQty, currentCartQty) {
         const rules = [];
         const total = currentInputQty + currentCartQty;
@@ -509,6 +407,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         return rules.length ? rules : null;
     }
 
+    /**
+     * @description Calcule l'état visuel du stock (In Stock / Low Stock / Out of Stock).
+     */
     calculateStockState(physicalStock, currentInCart, currentInput, isInfiniteStock) {
         let remaining = physicalStock - currentInCart - currentInput;
         if (remaining < 0) remaining = 0;
@@ -523,6 +424,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         return { label, cssClass };
     }
 
+    /**
+     * @description Calcule le prix final unitaire à afficher en fonction des paliers (Price Tiers) et des promotions.
+     */
     calculateFinalPrice(details, quantity, promoPrice) {
         let basePrice = parseFloat(details.unitPrice);
         let currentPrice = basePrice;
@@ -550,6 +454,9 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         };
     }
 
+    /**
+     * @description Génère la liste des paliers de prix pour affichage visuel, en appliquant le ratio de promotion si nécessaire.
+     */
     generateDynamicTiers(details, quantity, promoPrice) {
         if (!details.priceRanges?.length) return null;
         let discountRatio = 1.0;
@@ -600,6 +507,38 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         if (newVal === 0) delete this.inputQty[prodId];
         else this.inputQty[prodId] = String(newVal);
         this.buildGrid();
+    }
+
+    /**
+     * @description Ajoute les produits sélectionnés au panier.
+     * Vérifie les erreurs (stocks, règles) avant d'appeler l'Apex.
+     * Déclenche un rafraîchissement du mini-cart LWR.
+     */
+    async handleAddToCart() {
+        if (this._isPreview || this.isSaving) return;
+        this.isSaving = true;
+        const hasItems = Object.values(this.inputQty).some(val => val && parseFloat(val) > 0);
+        
+        if (this.hasErrors) {
+            this.showToast('Error', 'Please correct invalid quantities (red fields).', 'error');
+            this.isSaving = false;
+            return;
+        }
+
+        if (!hasItems) { this.showToast('Warning', 'Please select at least one item.', 'warning'); this.isSaving = false; return; }
+        
+        try {
+            const itemsMap = {};
+            for (const [pId, qtyStr] of Object.entries(this.inputQty)) { const qty = parseFloat(qtyStr); if (qty > 0) itemsMap[pId] = qty; }
+            await addItemsToCart({ communityId: communityId, effectiveAccountId: this.effectiveAccountId, itemsMap: itemsMap });
+            for (const [pId, qty] of Object.entries(itemsMap)) { this.cartDataMap[pId] = (parseFloat(this.cartDataMap[pId] || 0) + qty); }
+            this.inputQty = {};
+            this.buildGrid(); 
+            this.showToast('Success', 'Items added to cart.', 'success');
+            await refreshCartSummary();
+            this.dispatchEvent(new CustomEvent('cartchanged'));
+        } catch (error) { this.showToast('Error', error.body?.message || 'Error adding to cart.', 'error'); this.fetchCartDataAndRebuild(false); } 
+        finally { this.isSaving = false; }
     }
 
     showToast(title, message, variant) { this.dispatchEvent(new ShowToastEvent({ title, message, variant })); }

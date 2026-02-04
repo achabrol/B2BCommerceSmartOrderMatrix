@@ -1,18 +1,27 @@
 import { LightningElement, track, api } from 'lwc';
 import askEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.askEinstein';
+import analyzeFileWithEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.analyzeFileWithEinstein';
+import explainAdjustmentsWithEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.explainAdjustmentsWithEinstein';
+import communityBasePath from '@salesforce/community/basePath';
 
+/**
+ * @description Assistant virtuel B2B.
+ * Gère le chat UI et communique avec le contrôleur Apex pour envoyer le contexte produit à Einstein.
+ * Transforme les réponses JSON de l'IA en cartes produits visuelles et événements "addproduct".
+ * Gère également l'upload de fichiers (CSV/TXT) pour extraction automatique.
+ */
 export default class B2bAiAssistant extends LightningElement {
     
     @api products = [];
 
-    // --- MEMOIRE CONTEXTUELLE DES RECOMMANDATIONS ---
-    activeRecommendations = []; 
-    // ------------------------------------------------
+    // --- MEMOIRE ---
+    lastShownItems = []; 
+    // ---------------
 
     @track messages = [
         { 
             id: 'welcome', 
-            text: "Hello! I'm your B2B Sales Assistant. How can I help you today?", 
+            text: "Hello! I'm your B2B Sales Assistant. How can I help you today? You can also upload a CSV or Text file with a list of products.", 
             isAi: true,
             wrapperClass: 'message-wrapper left', 
             bubbleClass: 'chat-bubble left' 
@@ -23,160 +32,312 @@ export default class B2bAiAssistant extends LightningElement {
     
     conversationContext = ''; 
 
+    /**
+     * @description Capture la saisie de l'utilisateur dans l'input text.
+     * @param event L'événement de changement standard.
+     */
     handleInputChange(event) { this.userInput = event.target.value; }
+
+    /**
+     * @description Gère l'appui sur la touche Entrée pour envoyer le message.
+     * @param event L'événement clavier.
+     */
     handleKeyUp(event) { if (event.key === 'Enter') this.handleSend(); }
 
-    // --- LOGIQUE IA-DRIVEN (System Prompt) ---
-    @api async triggerAiRecommendation(addedItemName, recommendedItems) {
-        this.isTyping = true; 
+    // --- LOGIQUE DE VALIDATION QUANTITÉ ---
 
-        // 1. Sauvegarde dans le contexte actif de l'assistant
-        this.activeRecommendations = recommendedItems || [];
+    /**
+     * @description Calcule la quantité valide à ajouter en fonction des règles Min/Max/Incrément et Stock.
+     * Retourne la quantité ajustée et la raison si ajustement.
+     */
+    calculateValidQuantity(product, requestedQty) {
+        let qty = parseFloat(requestedQty);
+        let reasons = [];
+        
+        // 1. Récupération des contraintes
+        const min = product.minQty ? parseFloat(product.minQty) : 1;
+        const max = product.maxQty ? parseFloat(product.maxQty) : 999999;
+        const inc = product.increment ? parseFloat(product.increment) : 1;
+        
+        // Stock calculé
+        const isInfiniteStock = (product.stock === undefined || product.stock === null || product.stock === 'null');
+        const physicalStock = isInfiniteStock ? 999999 : parseFloat(product.stock);
+        const inCart = product.cartQty ? parseFloat(product.cartQty) : 0;
+        const selected = product.qtyValue ? parseFloat(product.qtyValue) : 0;
+        const availableStock = Math.max(0, physicalStock - inCart - selected);
 
-        const systemPrompt = `SYSTEM_CONTEXT: The user successfully added "${addedItemName}" to their cart. 
-        Based on this, the system recommends these specific Cross-Sell products: 
-        ${JSON.stringify(recommendedItems)}. 
-        INSTRUCTION: Inform the user that the item was added, then suggest these recommendations naturally using the provided data.`;
+        // Détection de l'intention "Tout le stock" venant de l'IA (valeur > 9 millions)
+        const isMaxRequest = qty > 9000000; 
+        let initialQty = qty;
 
-        // Note: On passe le catalogue, mais le prompt système donne les détails spécifiques des recos
-        const contextString = JSON.stringify(this.products); 
+        // 2. Application des règles
+        // Règle Min
+        if (qty < min) {
+            qty = min;
+            reasons.push(`Minimum quantity is ${min}`);
+        }
+
+        // Règle Incrément
+        if (inc > 1) {
+            let remainder = qty % inc;
+            if (remainder !== 0) {
+                qty = Math.ceil(qty / inc) * inc;
+                reasons.push(`Adjusted to multiple of ${inc}`);
+            }
+        }
+
+        // Règle Max (Config Product)
+        if (qty > max) {
+            qty = max;
+            reasons.push(`Maximum allowed per order is ${max}`);
+        }
+
+        // Règle Stock (Physique)
+        if (qty > availableStock) {
+            qty = availableStock;
+            if (isMaxRequest) {
+                // Si c'était une demande "Max", on change la raison pour que ce soit positif
+                reasons.push(`Added all available stock (${availableStock})`);
+            } else {
+                reasons.push(`Limited by available stock (${availableStock} remaining)`);
+            }
+        }
+
+        // Calcul ajustement
+        const isAdjusted = (qty !== initialQty) || reasons.length > 0;
+
+        if (isAdjusted) {
+            console.warn(`⚠️ [ADJUSTMENT] ${product.name}: Requested ${initialQty} -> Final ${qty}. Reasons:`, reasons);
+        } else {
+            console.log(`✅ [VALID] ${product.name}: Requested ${initialQty} -> OK.`);
+        }
+
+        return {
+            finalQty: qty,
+            isAdjusted: isAdjusted,
+            reasons: reasons
+        };
+    }
+
+    // --- GESTION FICHIERS ---
+
+    /**
+     * @description Déclenche le clic sur l'input file caché.
+     */
+    triggerFileUpload() {
+        const fileInput = this.template.querySelector('.file-input-hidden');
+        if (fileInput) fileInput.click();
+    }
+
+    /**
+     * @description Gère la sélection du fichier et lance la lecture.
+     */
+    handleFileSelect(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        this.addMessage(`Analyzing file: ${file.name}...`, false);
+        this.isTyping = true;
+        this.scrollToBottom();
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const fileContent = e.target.result;
+            this.uploadFileToAi(fileContent, file.name);
+        };
+        reader.readAsText(file);
+        
+        event.target.value = '';
+    }
+
+    /**
+     * @description Envoie le contenu du fichier à la nouvelle méthode IA Apex.
+     */
+    async uploadFileToAi(content, fileName) {
+        const rawCatalogData = this.products.map(p => this.mapProductToContext(p));
+        const catalogJson = JSON.stringify(rawCatalogData);
+
+        console.group('📂 [FILE UPLOAD DEBUG] Sending File to Apex');
+        console.log('File Name:', fileName);
+        console.log('File Content Preview:', content.substring(0, 200) + '...');
+        console.groupEnd();
 
         try {
-            const result = await askEinstein({ 
-                userMessage: systemPrompt, 
-                productContextString: contextString
+            const result = await analyzeFileWithEinstein({
+                fileContent: content,
+                productContextString: catalogJson
             });
 
             this.isTyping = false;
+            console.log('📂 [FILE UPLOAD DEBUG] Apex Response:', result);
 
             if (result.success) {
                 const aiData = JSON.parse(result.response);
                 
-                let cardsToDisplay = [];
-                if (aiData.items) {
-                    cardsToDisplay = aiData.items.map(item => {
-                        const fullData = recommendedItems.find(r => r.sku === item.sku) || 
-                                         this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
-                        
-                        if (fullData) {
-                            return {
-                                id: fullData.id,
-                                name: fullData.name,
-                                sku: fullData.sku || fullData.StockKeepingUnit,
-                                price: fullData.displayUnitPrice || fullData.unitPrice || fullData.price,
-                                imgUrl: fullData.imgUrl,
-                                promo: fullData.promoName || fullData.promo,
-                                currency: 'USD'
-                            };
+                let tableItems = [];
+                if (aiData.items && Array.isArray(aiData.items)) {
+                    aiData.items.forEach(item => {
+                        let realDataProduct = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+                        if (realDataProduct) {
+                            
+                            const cardVisuals = this.formatCard(realDataProduct);
+                            const contextP = this.mapProductToContext(realDataProduct);
+                            
+                            tableItems.push({
+                                ...cardVisuals,
+                                quantityRequested: item.quantity,
+                                availableToAdd: contextP.stock 
+                            });
                         }
-                        return null;
-                    }).filter(x => x !== null);
+                    });
                 }
 
-                this.messages = [...this.messages, {
-                    id: Date.now(),
-                    text: aiData.message, 
-                    isAi: true,
-                    products: cardsToDisplay.length > 0 ? cardsToDisplay : null,
-                    wrapperClass: 'message-wrapper left',
-                    bubbleClass: 'chat-bubble left'
-                }];
-                
-                this.conversationContext += `\nAssistant: ${aiData.message}`;
-                this.scrollToBottom();
+                if (tableItems.length > 0) {
+                    this.addFileValidationMessage(aiData.message || "I found these items in your file. Please verify.", tableItems);
+                } else {
+                    this.addAiMessage("I analyzed the file but couldn't match any products from our catalog.");
+                }
+
+            } else {
+                this.addAiMessage("⚠️ Error analyzing file: " + result.message);
             }
-        } catch (e) {
+
+        } catch (error) {
             this.isTyping = false;
-            console.error('AI Trigger Error', e);
+            console.error('❌ File Upload Error:', error);
+            this.addAiMessage("Connection error during file analysis.");
         }
     }
 
+    /**
+     * @description Affiche le message spécial avec le tableau de validation.
+     */
+    addFileValidationMessage(text, tableItems) {
+        this.messages = [...this.messages, {
+            id: Date.now(),
+            text: text,
+            isAi: true,
+            isFileResult: true, 
+            fileItems: tableItems,
+            wrapperClass: 'message-wrapper left',
+            bubbleClass: 'chat-bubble left'
+        }];
+        this.scrollToBottom();
+    }
+
+    /**
+     * @description Action du bouton "Add to List" dans le tableau de fichier.
+     * MISE A JOUR : Applique la validation stricte des quantités (calculateValidQuantity) et génère un feedback IA si ajustements.
+     */
+    async handleConfirmFile(event) {
+        const msgId = event.target.dataset.msgid;
+        const message = this.messages.find(m => m.id == msgId);
+        
+        if (message && message.fileItems) {
+            let addedCount = 0;
+            let adjustmentLogs = [];
+
+            message.fileItems.forEach(item => {
+                // Recherche du produit réel pour avoir les règles (min, max, inc)
+                const realDataProduct = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+                
+                if (realDataProduct) {
+                    // VALIDATION STRICTE
+                    const validation = this.calculateValidQuantity(realDataProduct, item.quantityRequested);
+                    
+                    if (validation.finalQty > 0) {
+                        this.dispatchEvent(new CustomEvent('addproduct', {
+                            detail: { 
+                                sku: item.sku, 
+                                quantity: validation.finalQty,
+                                isRecommendation: false 
+                            }
+                        }));
+                        addedCount++;
+                        
+                        // Si ajusté, on logue pour l'IA
+                        if (validation.isAdjusted) {
+                            adjustmentLogs.push(`${realDataProduct.name}: Requested ${item.quantityRequested}, Adjusted to ${validation.finalQty}. Reason: ${validation.reasons.join(', ')}.`);
+                        }
+                    } else {
+                        // Cas échec total (ex: Stock 0)
+                        adjustmentLogs.push(`${realDataProduct.name}: Could not add. Reason: ${validation.reasons.join(', ')}.`);
+                    }
+                }
+            });
+
+            // Feedback Interface
+            if (addedCount > 0) {
+                this.addMessage(`✅ Added ${addedCount} items to list.`, true);
+                this.conversationContext += `\nSystem: Added ${addedCount} items from file upload.`;
+            } else {
+                this.addMessage("⚠️ No items could be added.", true);
+            }
+
+            // FEEDBACK IA (Si ajustements)
+            if (adjustmentLogs.length > 0) {
+                this.isTyping = true;
+                try {
+                    const explainRes = await explainAdjustmentsWithEinstein({ adjustments: adjustmentLogs });
+                    this.isTyping = false;
+                    if (explainRes.success) {
+                        this.addAiMessage(explainRes.response);
+                    }
+                } catch(e) { this.isTyping = false; }
+            }
+        }
+    }
+
+    /**
+     * @description Action du bouton "Cancel".
+     */
+    handleCancelFile(event) {
+        this.addMessage("File import cancelled.", true);
+    }
+
+    // --- MESSAGE UTILISATEUR ---
+
+    /**
+     * @description Traite l'envoi du message utilisateur.
+     * MISE A JOUR : Applique la validation stricte sur les actions 'add'/'set' venant de l'IA et génère un feedback.
+     */
     async handleSend() {
         if (!this.userInput.trim()) return;
 
         const text = this.userInput;
         this.addMessage(text, false);
         this.conversationContext += `\nUser: ${text}`;
-        
         this.userInput = '';
         this.isTyping = true;
         this.scrollToBottom();
 
-        // 1. Préparation du Contexte PRINCIPAL (Grille)
-        const contextData = this.products.map(p => {
-            let tierInfo = '';
-            if (p.tierList && p.tierList.length > 0) {
-                tierInfo = p.tierList.map(t => t.label).join(', ');
-            }
-            
-            const sellingPrice = p.displayUnitPrice || p.unitPrice; 
-            let standardPrice = p.displayListPrice;
-            if (!standardPrice && sellingPrice !== p.unitPrice) { standardPrice = p.unitPrice; }
-            let stockVal = 'Unlimited';
-            if (p.stock !== undefined && p.stock !== null && p.stock !== '') { stockVal = p.stock; }
-            let enrichedDesc = p.Description || '';
-            if (p.variationInfo) { enrichedDesc += ` (${p.variationInfo})`; }
-
-            return {
-                name: p.name,
-                sku: p.sku || p.StockKeepingUnit, 
-                desc: enrichedDesc, 
-                price: sellingPrice,       
-                listPrice: standardPrice,  
-                promo: p.promoName || '',  
-                stock: stockVal,             
-                selected: p.qtyValue || 0,   
-                inCart: p.cartQty || 0,      
-                min: p.minQty || 1,
-                max: p.maxQty || '',
-                inc: p.increment || 1,
-                tiers: tierInfo
+        const rawCatalogData = this.products.map(p => this.mapProductToContext(p));
+        const rawLastShownData = this.lastShownItems.map(item => {
+            const updated = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+            return updated ? this.mapProductToContext(updated) : {
+                name: item.name, sku: item.sku, 
+                desc: item.variationInfo || "",
+                selected: 0, inCart: 0
             };
         });
 
-        // 2. FUSION : Ajouter les Recos Actives au contexte avec PRIORITÉ
-        if (this.activeRecommendations.length > 0) {
-            console.log('🕵️ [DEBUG AI] Injection des Recos dans le contexte JSON...');
-            
-            // On inverse l'ordre pour les mettre EN PREMIER (unshift)
-            [...this.activeRecommendations].reverse().forEach(reco => {
-                const existsIndex = contextData.findIndex(c => c.sku === reco.sku);
-                
-                let newItem = {
-                    name: reco.name,
-                    sku: reco.sku,
-                    // --- TAG SPECIAL POUR L'IA (CASE 5) ---
-                    desc: "(Recommended) " + (reco.variationInfo || "Cross-Sell Product"), 
-                    // -------------------------------------
-                    price: reco.displayUnitPrice || reco.price,
-                    stock: 'Available',
-                    selected: 0,
-                    inCart: 0
-                };
+        console.group('🤖 [EINSTEIN AI DEBUG] Payload sent to Apex');
+        console.log('🗣️ User Conversation Context:', this.conversationContext);
+        console.log('📦 Catalog Context (Full JSON):', JSON.parse(JSON.stringify(rawCatalogData)));
+        console.groupEnd();
 
-                if (existsIndex !== -1) {
-                    // Si existe déjà, on le déplace en haut et on update la desc
-                    let existing = contextData[existsIndex];
-                    existing.desc = "(Recommended) " + existing.desc;
-                    contextData.splice(existsIndex, 1); // Retirer de l'ancienne position
-                    contextData.unshift(existing);      // Mettre en haut
-                } else {
-                    // Si nouveau, on ajoute en haut
-                    contextData.unshift(newItem);
-                }
-            });
-        }
-
-        const contextString = JSON.stringify(contextData); 
-        console.log('🕵️ [DEBUG AI] JSON envoyé:', contextString);
+        const catalogJson = JSON.stringify(rawCatalogData);
+        const lastShownJson = JSON.stringify(rawLastShownData);
 
         try {
             const result = await askEinstein({ 
                 userMessage: this.conversationContext,
-                productContextString: contextString
+                productContextString: catalogJson,
+                lastShownContextString: lastShownJson 
             });
             
             this.isTyping = false;
+            console.log('🤖 [EINSTEIN AI DEBUG] Raw Response:', result);
 
             if (result.success) {
                 try {
@@ -184,133 +345,210 @@ export default class B2bAiAssistant extends LightningElement {
                     this.conversationContext += `\nAssistant: ${aiData.message}`;
 
                     let productsToDisplay = [];
+                    let adjustmentLogs = []; 
                     
                     if (aiData.items && Array.isArray(aiData.items)) {
                         aiData.items.forEach(item => {
-                            // 3. RECHERCHE ETENDUE (Grille OU Recos)
-                            let foundProduct = this.products.find(p => 
-                                (p.sku === item.sku) || (p.StockKeepingUnit === item.sku)
-                            );
-
-                            // Si pas dans la grille, check dans les recos actives
-                            if (!foundProduct && this.activeRecommendations.length > 0) {
-                                foundProduct = this.activeRecommendations.find(r => r.sku === item.sku);
-                                if (foundProduct) {
-                                    // Mapping rapide pour uniformiser
-                                    foundProduct = {
-                                        ...foundProduct,
-                                        qtyValue: 0, 
-                                        StockKeepingUnit: foundProduct.sku 
-                                    };
-                                }
-                            }
+                            let foundProduct = this.lastShownItems.find(r => r.sku === item.sku) ||
+                                               this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+                            let realDataProduct = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
 
                             if (foundProduct) {
+                                if (!foundProduct.imgUrl && foundProduct.defaultImage) foundProduct.imgUrl = foundProduct.defaultImage.url;
+
                                 let finalQty = 0;
                                 let qtyRaw = item.quantity ? parseInt(item.quantity, 10) : 0;
 
-                                console.log(`🤖 Action IA pour ${item.sku}: ${item.action} (Qté: ${qtyRaw})`);
-
+                                // Logique Actions
                                 if (item.action === 'set') {
-                                    const currentSelected = foundProduct.qtyValue ? parseFloat(foundProduct.qtyValue) : 0;
+                                    const currentSelected = (realDataProduct && realDataProduct.qtyValue) ? parseFloat(realDataProduct.qtyValue) : 0;
                                     finalQty = qtyRaw - currentSelected;
-                                } 
-                                else if (item.action === 'remove') {
+                                } else if (item.action === 'remove') {
                                     finalQty = -qtyRaw;
-                                }
-                                else {
-                                    finalQty = qtyRaw;
+                                } else {
+                                    finalQty = qtyRaw; // Cas 'add' standard
                                 }
 
-                                // --- MODIFICATION : CHECK IS RECO ---
-                                const isFromReco = this.activeRecommendations.some(r => r.sku === item.sku);
-                                // ------------------------------------
-
-                                if (finalQty !== 0 && item.action !== 'search') {
-                                    this.dispatchEvent(new CustomEvent('addproduct', {
-                                        detail: { 
-                                            sku: foundProduct.sku || foundProduct.StockKeepingUnit, 
-                                            quantity: finalQty,
-                                            isRecommendation: isFromReco // On passe l'info au parent
+                                // VALIDATION STRICTE AVANT DISPATCH
+                                if (finalQty > 0 && item.action !== 'search' && realDataProduct) {
+                                    // Utilisation de la quantité BRUTE si > 9M pour activer la logique "Max"
+                                    let qtyToValidate = item.quantity > 9000000 ? item.quantity : finalQty;
+                                    
+                                    const validation = this.calculateValidQuantity(realDataProduct, qtyToValidate);
+                                    
+                                    if (validation.finalQty > 0) {
+                                        this.dispatchEvent(new CustomEvent('addproduct', {
+                                            detail: { 
+                                                sku: foundProduct.sku || foundProduct.StockKeepingUnit, 
+                                                quantity: validation.finalQty,
+                                                isRecommendation: false 
+                                            }
+                                        }));
+                                        
+                                        if (validation.isAdjusted) {
+                                            // Message spécifique si c'était une demande "Max"
+                                            if(qtyToValidate > 9000000) {
+                                                adjustmentLogs.push(`${foundProduct.name}: Added ${validation.finalQty} units (Maximum available).`);
+                                            } else {
+                                                adjustmentLogs.push(`${foundProduct.name}: Requested ${qtyToValidate}, Adjusted to ${validation.finalQty}. (${validation.reasons.join(', ')})`);
+                                            }
                                         }
+                                    } else {
+                                        adjustmentLogs.push(`${foundProduct.name}: Could not add. (${validation.reasons.join(', ')})`);
+                                    }
+                                } 
+                                else if (finalQty < 0 && item.action !== 'search') {
+                                     this.dispatchEvent(new CustomEvent('addproduct', {
+                                        detail: { sku: foundProduct.sku || foundProduct.StockKeepingUnit, quantity: finalQty, isRecommendation: false }
                                     }));
                                 }
-                                
-                                productsToDisplay.push({
-                                    id: foundProduct.id,
-                                    name: foundProduct.name,
-                                    sku: foundProduct.sku || foundProduct.StockKeepingUnit,
-                                    price: foundProduct.displayUnitPrice || foundProduct.price,
-                                    imgUrl: foundProduct.imgUrl,
-                                    promo: foundProduct.promoName,
-                                    currency: 'USD'
-                                });
+
+                                productsToDisplay.push(this.formatCard(foundProduct));
                             }
                         });
                     }
-                    this.addMessage(aiData.message, true, productsToDisplay);
+
+                    if (productsToDisplay.length > 0) {
+                        this.lastShownItems = productsToDisplay;
+                    }
+
+                    this.addAiMessage(aiData.message, productsToDisplay);
+
+                    // FEEDBACK IA CHAT
+                    if (adjustmentLogs.length > 0) {
+                        console.log('📝 Sending Adjustment Logs to AI:', adjustmentLogs);
+                        this.isTyping = true;
+                        const explainRes = await explainAdjustmentsWithEinstein({ adjustments: adjustmentLogs });
+                        this.isTyping = false;
+                        if (explainRes.success) {
+                            this.addAiMessage(explainRes.response);
+                        }
+                    }
 
                 } catch (jsonError) {
-                    console.error('JSON Parse Error:', jsonError);
+                    console.error('❌ JSON Parsing Error on AI Response:', jsonError);
                     this.addMessage(result.response, true);
-                    this.conversationContext += `\nAssistant: ${result.response}`;
                 }
-
             } else {
                 this.addMessage("⚠️ " + result.message, true);
             }
-
         } catch (error) {
             this.isTyping = false;
-            console.error('LWC Error:', error);
-            this.addMessage("Sorry, connection error.", true);
+            console.error('❌ Network/Apex Error:', error);
+            this.addMessage("Connection error.", true);
         }
-
-        this.scrollToBottom();
     }
 
-    addMessage(text, isAi, products = null) {
-        let productCards = [];
-        
-        if (products) {
-            const list = Array.isArray(products) ? products : [products];
-            
-            productCards = list.map(p => {
-                const sellingPrice = p.displayUnitPrice || p.unitPrice;
-                let standardPrice = p.displayListPrice;
-                if (!standardPrice && sellingPrice !== p.unitPrice) {
-                    standardPrice = p.unitPrice;
-                }
+    // --- HELPERS ---
 
-                let specsArray = [];
-                if (p.variationInfo) {
-                    specsArray = p.variationInfo.split(', '); 
-                }
+    /**
+     * @description Convertit une liste d'items simples en objets Card affichables.
+     * @param items Liste d'objets {sku, ...}
+     * @param sourceList Liste source où trouver les détails complets.
+     * @return Array Liste d'objets formatés pour le template.
+     */
+    mapItemsToCards(items, sourceList) {
+        if (!items) return [];
+        return items.map(item => {
+            const fullData = sourceList.find(r => r.sku === item.sku) || 
+                             this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
+            return fullData ? this.formatCard(fullData) : null;
+        }).filter(x => x !== null);
+    }
 
-                return {
-                    id: p.id,
-                    name: p.name,
-                    sku: p.sku || p.StockKeepingUnit,
-                    price: sellingPrice,
-                    imgUrl: p.imgUrl,
-                    promo: p.promoName,
-                    listPrice: standardPrice, 
-                    currency: p.currencyCode || 'USD',
-                    specs: specsArray 
-                };
+    /**
+     * @description Formate un objet produit brut en objet utilisable pour l'affichage de la carte (Card) dans le chat.
+     * AJOUT : Construction du productUrl pour lien cliquable.
+     * @param p Objet produit brut.
+     * @return Object Objet structuré pour le HTML.
+     */
+    formatCard(p) {
+        let specs = [];
+        if (p.variationInfo) {
+            specs = p.variationInfo.split(', ').map((specStr, index) => {
+                return { key: `${p.id}-spec-${index}`, label: specStr, cssClass: 'card-spec-pill' };
             });
         }
 
+        return {
+            id: p.id, 
+            name: p.name, 
+            sku: p.sku || p.StockKeepingUnit,
+            price: p.displayUnitPrice || p.unitPrice || p.price,
+            listPrice: p.listPrice || null, 
+            imgUrl: p.imgUrl, 
+            promo: p.promoName || p.promo,
+            specs: specs, 
+            currency: 'USD',
+            productUrl: communityBasePath + '/product/' + p.id // CORRECTION ICI (Base Path)
+        };
+    }
+
+    /**
+     * @description Sérialise un produit pour le contexte JSON envoyé au LLM.
+     * Calcule le stock DISPONIBLE À L'AJOUT (Physique - (Panier + Saisi)).
+     * @param p Objet produit brut.
+     * @return Object Objet simplifié pour le prompt JSON.
+     */
+    mapProductToContext(p) {
+        let tierInfo = '';
+        if (p.tierList) tierInfo = p.tierList.map(t => t.label).join(', ');
+        const sellingPrice = p.displayUnitPrice || p.unitPrice; 
+
+        const inCart = p.cartQty ? parseFloat(p.cartQty) : 0;
+        const selected = p.qtyValue ? parseFloat(p.qtyValue) : 0;
+
+        const isInfiniteStock = (p.stock === undefined || p.stock === null || p.stock === 'null');
+        const physicalStock = isInfiniteStock ? 999999 : parseFloat(p.stock);
+        
+        let availableToAdd = physicalStock - inCart - selected;
+        if (availableToAdd < 0) availableToAdd = 0;
+
+        return {
+            name: p.name, 
+            sku: p.sku || p.StockKeepingUnit, 
+            desc: p.Description + (p.variationInfo ? ' ' + p.variationInfo : ''), 
+            price: sellingPrice, 
+            stock: availableToAdd, 
+            stockLabel: p.stockLabel, 
+            selected: selected, 
+            inCart: inCart,
+            tiers: tierInfo
+        };
+    }
+
+    /**
+     * @description Ajoute un message de l'IA à la liste d'affichage.
+     * @param text Le texte à afficher.
+     * @param products Liste optionnelle de cartes produits à afficher sous le texte.
+     */
+    addAiMessage(text, products) {
         this.messages = [...this.messages, {
-            id: Date.now(),
-            text: text,
-            isAi: isAi,
-            products: productCards.length > 0 ? productCards : null,
+            id: Date.now(), text: text, isAi: true,
+            products: products && products.length > 0 ? products : null,
+            wrapperClass: 'message-wrapper left', bubbleClass: 'chat-bubble left'
+        }];
+        this.scrollToBottom();
+    }
+
+    /**
+     * @description Ajoute un message (User ou System) à la liste d'affichage.
+     * @param text Le texte.
+     * @param isAi Booléen indiquant si c'est l'IA.
+     * @param products Cartes produits (rarement utilisé ici, plutôt pour addAiMessage).
+     */
+    addMessage(text, isAi, products = null) {
+        this.messages = [...this.messages, {
+            id: Date.now(), text: text, isAi: isAi,
+            products: products,
             wrapperClass: `message-wrapper ${isAi ? 'left' : 'right'}`,
             bubbleClass: `chat-bubble ${isAi ? 'left' : 'right'}`
         }];
     }
 
+    /**
+     * @description Fait défiler la fenêtre de chat vers le bas automatiquement.
+     */
     scrollToBottom() {
         setTimeout(() => {
             const chatBox = this.template.querySelector('.chat-messages');
@@ -318,6 +556,10 @@ export default class B2bAiAssistant extends LightningElement {
         }, 50);
     }
 
+    /**
+     * @description Gère le clic sur un bouton d'ajout manuel dans une carte produit du chat (si implémenté).
+     * @param event Événement click.
+     */
     handleAddRequest(event) {
         const sku = event.target.dataset.sku;
         const qty = parseInt(event.target.dataset.qty, 10);

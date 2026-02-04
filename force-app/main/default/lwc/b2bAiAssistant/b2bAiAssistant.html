@@ -15,7 +15,7 @@
             <template for:each={messages} for:item="msg">
                 <div key={msg.id} class={msg.wrapperClass}>
                     <div class={msg.bubbleClass}>
-                        <div class="msg-text">{msg.text}</div>
+                        <lightning-formatted-rich-text value={msg.text} class="msg-text"></lightning-formatted-rich-text>
                         
                         <template if:true={msg.products}>
                             <template for:each={msg.products} for:item="pCard">
@@ -28,37 +28,34 @@
                                     </div>
 
                                     <div class="card-right">
-                                        <div class="card-header-info">
-                                            <div class="card-title">{pCard.name}</div>
-                                            <div class="card-sku">SKU: {pCard.sku}</div>
-                                        </div>
-                                        
-                                        <template if:true={pCard.specs}>
-                                            <div class="specs-container">
-                                                <template for:each={pCard.specs} for:item="spec">
-                                                    <span key={spec} class="card-spec-pill">
-                                                        {spec}
-                                                    </span>
-                                                </template>
+                                        <div class="card-info">
+                                            <div class="card-title" title={pCard.name}>
+                                                <a href={pCard.productUrl} target="_blank">{pCard.name}</a>
                                             </div>
-                                        </template>
+                                            <div class="card-sku">{pCard.sku}</div>
+                                            
+                                            <template if:true={pCard.specs}>
+                                                <div class="specs-container">
+                                                    <template for:each={pCard.specs} for:item="spec">
+                                                        <span key={spec.key} class="card-spec-pill">{spec.label}</span>
+                                                    </template>
+                                                </div>
+                                            </template>
+                                        </div>
 
                                         <div class="card-compact-footer">
                                             <div class="price-wrapper">
-                                                <template if:true={pCard.listPrice}>
-                                                    <span class="list-price">
-                                                        <lightning-formatted-number value={pCard.listPrice} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
-                                                    </span>
-                                                </template>
-                                                <span class="current-price">
-                                                    <lightning-formatted-number value={pCard.price} format-style="currency" currency-code={pCard.currency}></lightning-formatted-number>
-                                                </span>
                                                 <template if:true={pCard.promo}>
                                                     <div class="promo-text">{pCard.promo}</div>
                                                 </template>
+                                                <template if:true={pCard.listPrice}>
+                                                    <span class="list-price">{pCard.currency} {pCard.listPrice}</span>
+                                                </template>
+                                                <span class="current-price">{pCard.currency} {pCard.price}</span>
                                             </div>
-
-                                            <button class="add-btn-mini" onclick={handleAddRequest} data-sku={pCard.sku} data-qty="1">
+                                            
+                                            <button class="add-btn-mini" onclick={handleAddRequest} 
+                                                    data-sku={pCard.sku} data-qty="1">
                                                 Add
                                             </button>
                                         </div>
@@ -66,6 +63,78 @@
 
                                 </div>
                             </template>
+                        </template>
+
+                        <template if:true={msg.isFileResult}>
+                            <div class="file-result-container">
+                                
+                                <div class="file-cards-grid">
+                                    <template for:each={msg.fileItems} for:item="fCard">
+                                        <div key={fCard.sku} class="product-card">
+                                            
+                                            <div class="card-left">
+                                                <div class="card-image-box">
+                                                    <img src={fCard.imgUrl} alt={fCard.name}/>
+                                                </div>
+                                            </div>
+
+                                            <div class="card-right">
+                                                <div class="card-info">
+                                                    <div class="card-title" title={fCard.name}>
+                                                        <a href={fCard.productUrl} target="_blank">{fCard.name}</a>
+                                                    </div>
+                                                    <div class="card-sku">{fCard.sku}</div>
+                                                    
+                                                    <template if:true={fCard.specs}>
+                                                        <div class="specs-container">
+                                                            <template for:each={fCard.specs} for:item="spec">
+                                                                <span key={spec.key} class="card-spec-pill">{spec.label}</span>
+                                                            </template>
+                                                        </div>
+                                                    </template>
+                                                </div>
+
+                                                <div class="file-card-footer-wrapper">
+                                                    
+                                                    <div class="card-compact-footer">
+                                                        <div class="price-wrapper">
+                                                            <template if:true={fCard.promo}>
+                                                                <div class="promo-text">{fCard.promo}</div>
+                                                            </template>
+                                                            <template if:true={fCard.listPrice}>
+                                                                <span class="list-price">{fCard.currency} {fCard.listPrice}</span>
+                                                            </template>
+                                                            <span class="current-price">{fCard.currency} {fCard.price}</span>
+                                                        </div>
+                                                        
+                                                        <button class="add-btn-mini" onclick={handleAddRequest} 
+                                                                data-sku={fCard.sku} data-qty={fCard.quantityRequested}>
+                                                            Add
+                                                        </button>
+                                                    </div>
+
+                                                    <div class="qty-badge-row">
+                                                        <div class="qty-found-badge">
+                                                            Qty found: {fCard.quantityRequested}
+                                                        </div>
+                                                    </div>
+
+                                                </div>
+                                            </div>
+
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <div class="file-actions">
+                                    <button class="file-action-btn neutral" onclick={handleCancelFile} data-msgid={msg.id}>
+                                        Cancel
+                                    </button>
+                                    <button class="file-action-btn brand" onclick={handleConfirmFile} data-msgid={msg.id}>
+                                        Add All to List
+                                    </button>
+                                </div>
+                            </div>
                         </template>
 
                     </div>
@@ -83,7 +152,19 @@
 
         <div class="chat-input-area">
             <div class="input-wrapper">
-                <input type="text" class="custom-input" placeholder="Ask for a product..." value={userInput} onkeyup={handleKeyUp} onchange={handleInputChange} />
+                <input type="file" class="file-input-hidden" accept=".csv, .txt" onchange={handleFileSelect} />
+                
+                <lightning-button-icon 
+                    icon-name="utility:attach" 
+                    variant="bare" 
+                    size="medium" 
+                    onclick={triggerFileUpload} 
+                    class="attach-btn"
+                    alternative-text="Upload File">
+                </lightning-button-icon>
+
+                <input type="text" class="custom-input" placeholder="Ask for a product or upload a list..." value={userInput} onkeyup={handleKeyUp} onchange={handleInputChange} />
+                
                 <button class="send-btn" onclick={handleSend}>
                     <lightning-icon icon-name="utility:send" size="x-small" class="icon-white"></lightning-icon>
                 </button>
