@@ -14,6 +14,28 @@ export default class B2bAiAssistant extends LightningElement {
     
     @api products = [];
 
+    // --- AJOUT : GESTION UTILISATEUR & LANGUE ---
+    _userName;
+    @track userLanguage; // Stocke la langue détectée (ex: 'fr', 'en_US')
+    
+    @api
+    get userName() { return this._userName; }
+    set userName(value) {
+        this._userName = value;
+        this.updateWelcomeMessage();
+    }
+    
+    /**
+     * @description Met à jour le message de bienvenue si le nom de l'utilisateur est disponible.
+     */
+    updateWelcomeMessage() {
+        if (this._userName && this.messages.length > 0 && this.messages[0].id === 'welcome') {
+            this.messages[0].text = `Hello ${this._userName}! I'm your B2B Sales Assistant. How can I help you today? You can also upload a CSV or Text file with a list of products.`;
+            this.messages = [...this.messages];
+        }
+    }
+    // -----------------------------------
+
     // --- MEMOIRE ---
     lastShownItems = []; 
     // ---------------
@@ -165,7 +187,9 @@ export default class B2bAiAssistant extends LightningElement {
         try {
             const result = await analyzeFileWithEinstein({
                 fileContent: content,
-                productContextString: catalogJson
+                productContextString: catalogJson,
+                // MODIF: Transmission dynamique de la langue
+                userContext: { userName: this.userName, language: this.userLanguage }
             });
 
             this.isTyping = false;
@@ -278,7 +302,11 @@ export default class B2bAiAssistant extends LightningElement {
             if (adjustmentLogs.length > 0) {
                 this.isTyping = true;
                 try {
-                    const explainRes = await explainAdjustmentsWithEinstein({ adjustments: adjustmentLogs });
+                    const explainRes = await explainAdjustmentsWithEinstein({ 
+                        adjustments: adjustmentLogs,
+                        // MODIF: Transmission dynamique de la langue
+                        userContext: { userName: this.userName, language: this.userLanguage }
+                    });
                     this.isTyping = false;
                     if (explainRes.success) {
                         this.addAiMessage(explainRes.response);
@@ -333,7 +361,9 @@ export default class B2bAiAssistant extends LightningElement {
             const result = await askEinstein({ 
                 userMessage: this.conversationContext,
                 productContextString: catalogJson,
-                lastShownContextString: lastShownJson 
+                lastShownContextString: lastShownJson,
+                // MODIF: Transmission dynamique de la langue
+                userContext: { userName: this.userName, language: this.userLanguage }
             });
             
             this.isTyping = false;
@@ -343,6 +373,12 @@ export default class B2bAiAssistant extends LightningElement {
                 try {
                     const aiData = JSON.parse(result.response);
                     this.conversationContext += `\nAssistant: ${aiData.message}`;
+
+                    // MODIF : Mise à jour de la langue détectée pour les échanges futurs
+                    if (aiData.detectedLanguage) {
+                        this.userLanguage = aiData.detectedLanguage;
+                        console.log('🌐 [AI DEBUG] Updated Language Context to:', this.userLanguage);
+                    }
 
                     let productsToDisplay = [];
                     let adjustmentLogs = []; 
@@ -418,7 +454,11 @@ export default class B2bAiAssistant extends LightningElement {
                     if (adjustmentLogs.length > 0) {
                         console.log('📝 Sending Adjustment Logs to AI:', adjustmentLogs);
                         this.isTyping = true;
-                        const explainRes = await explainAdjustmentsWithEinstein({ adjustments: adjustmentLogs });
+                        const explainRes = await explainAdjustmentsWithEinstein({ 
+                            adjustments: adjustmentLogs,
+                            // MODIF: Transmission dynamique de la langue
+                            userContext: { userName: this.userName, language: this.userLanguage }
+                        });
                         this.isTyping = false;
                         if (explainRes.success) {
                             this.addAiMessage(explainRes.response);

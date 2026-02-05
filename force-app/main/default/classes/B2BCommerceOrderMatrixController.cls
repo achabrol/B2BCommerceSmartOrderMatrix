@@ -529,22 +529,38 @@ public without sharing class B2BCommerceOrderMatrixController {
      * @param userMessage Le message de l'utilisateur.
      * @param productContextString Le catalogue JSON.
      * @param lastShownContextString Les derniers produits vus/interagis (Mémoire court terme).
+     * @param userContext Contexte utilisateur (userName, language).
      * @return Map<String, Object> Réponse contenant le JSON généré par l'IA.
      */
     @AuraEnabled
-    public static Map<String, Object> askEinstein(String userMessage, String productContextString, String lastShownContextString) {
+    public static Map<String, Object> askEinstein(
+        String userMessage, 
+        String productContextString, 
+        String lastShownContextString,
+        Map<String, Object> userContext 
+    ) {
         Map<String, Object> result = new Map<String, Object>();
         
-        // DEBUG LOGS (Server Side) - Utile pour vérifier la réception des données
+        // DEBUG LOGS (Server Side)
         System.debug('--- 🤖 AI REQUEST START ---');
         System.debug('User Message: ' + userMessage);
-        System.debug('Catalog Length: ' + (productContextString != null ? productContextString.length() : 0));
-        System.debug('Last Shown Context: ' + lastShownContextString);
         
         try {
+            // AJOUT : Extraction du nom et de la langue
+            String userName = 'User';
+            String language = null;
+            if (userContext != null) {
+                if (userContext.containsKey('userName')) userName = (String)userContext.get('userName');
+                if (userContext.containsKey('language')) language = (String)userContext.get('language');
+            }
+
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            String prompt = 'You are a friendly B2B Sales Assistant.\n';
+            // MODIF PROMPT : Injection Nom + Langue
+            String prompt = 'You are a friendly B2B Sales Assistant for user ' + userName + '.\n';
+            if (String.isNotBlank(language)) {
+                prompt += 'Current Communication Language: ' + language + '.\n';
+            }
             prompt += 'You have access to CATALOG DATA (JSON) and RECENTLY SHOWN ITEMS.\n\n';
             
             prompt += '### CATALOG DATA:\n' + productContextString + '\n\n';
@@ -552,19 +568,18 @@ public without sharing class B2BCommerceOrderMatrixController {
             
             prompt += '### INSTRUCTIONS:\n';
             prompt += '1. VISUAL CARDS: If you recommend specific products, include them in the "items" array (action="search").\n';
-            prompt += '2. TEXT MESSAGE: Keep it SHORT. No technical specs in text.\n';
+            prompt += '2. TEXT MESSAGE: Keep it SHORT. No technical specs in text. Respond in the same language as the User Query or the provided Context Language.\n';
             prompt += '3. ACTIONS:\n';
             prompt += '   - "Add 5" -> action="add", quantity=5\n';
             prompt += '   - "Remove 2" -> action="remove", quantity=2\n';
             prompt += '   - "Set to 10" -> action="set", quantity=10\n';
-            // --- MODIFICATION CRITIQUE : SEUIL AUGMENTE A 9999999 ---
             prompt += '   - "Add All" / "Everything" / "Max" -> action="set", quantity=9999999\n';
-            // --------------------------------------------------------
             prompt += '   - "Search/Show X" -> action="search"\n';
 
             prompt += '4. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
-            prompt += '     "message": "Short text summary", \n';
+            prompt += '     "message": "Short text summary in the target language", \n';
+            prompt += '     "detectedLanguage": "ISO code of language used (e.g. en_US, fr, de)", \n';
             prompt += '     "items": [ \n';
             prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "set" OR "search" } \n';
             prompt += '     ] \n';
@@ -581,11 +596,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             ConnectApi.EinsteinLLMGenerationsOutput generationsOutput = ConnectApi.EinsteinLLM.generateMessages(generationsInput);
             String aiResponseText = generationsOutput.generations[0].text;
             
-            // Nettoyage Markdown si l'IA ajoute des backticks
             aiResponseText = aiResponseText.replace('```json', '').replace('```', '').trim();
-            
-            System.debug('--- 🤖 AI RESPONSE ---');
-            System.debug(aiResponseText);
             
             result.put('success', true);
             result.put('response', aiResponseText);
@@ -605,17 +616,33 @@ public without sharing class B2BCommerceOrderMatrixController {
      * @description Méthode dédiée pour l'analyse de fichiers (CSV/Texte).
      * @param fileContent Le contenu brut du fichier.
      * @param productContextString Le catalogue JSON pour la correspondance.
+     * @param userContext Contexte utilisateur.
      */
     @AuraEnabled
-    public static Map<String, Object> analyzeFileWithEinstein(String fileContent, String productContextString) {
+    public static Map<String, Object> analyzeFileWithEinstein(
+        String fileContent, 
+        String productContextString,
+        Map<String, Object> userContext
+    ) {
         Map<String, Object> result = new Map<String, Object>();
         System.debug('--- 📂 FILE ANALYSIS START ---');
-        System.debug('File Content Preview: ' + (fileContent.length() > 50 ? fileContent.substring(0, 50) : fileContent));
 
         try {
+            // AJOUT : Extraction du nom et de la langue
+            String userName = 'User';
+            String language = null;
+            if (userContext != null) {
+                if (userContext.containsKey('userName')) userName = (String)userContext.get('userName');
+                if (userContext.containsKey('language')) language = (String)userContext.get('language');
+            }
+
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            String prompt = 'You are a B2B Data Extraction Assistant.\n';
+            // MODIF PROMPT : Injection
+            String prompt = 'You are a B2B Data Extraction Assistant processing a file upload from user: ' + userName + '.\n';
+            if (String.isNotBlank(language)) {
+                prompt += 'Respond in ' + language + '.\n';
+            }
             prompt += 'Your goal is to extract PRODUCT REFERENCES and QUANTITIES from the FILE CONTENT below and match them against the CATALOG DATA.\n\n';
             
             prompt += '### CATALOG DATA (JSON):\n' + productContextString + '\n\n';
@@ -631,7 +658,7 @@ public without sharing class B2BCommerceOrderMatrixController {
 
             prompt += '### OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
-            prompt += '     "message": "Summary of what was found (e.g., I found 3 items matching our catalog).", \n';
+            prompt += '     "message": "Summary of what was found (e.g., I found 3 items matching our catalog) in the target language.", \n';
             prompt += '     "items": [ \n';
             prompt += '        { "sku": "MATCHED_SKU", "quantity": NUMBER_FROM_FILE } \n';
             prompt += '     ] \n';
@@ -640,17 +667,13 @@ public without sharing class B2BCommerceOrderMatrixController {
             generationsInput.promptTextorId = prompt;
             generationsInput.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
             generationsInput.additionalConfig.maxTokens = 1000;
-            generationsInput.additionalConfig.temperature = 0.2; // Température basse pour extraction précise
-            
+            generationsInput.additionalConfig.temperature = 0.2; 
             generationsInput.additionalConfig.applicationName = 'PromptBuilderPreview';
             
             ConnectApi.EinsteinLLMGenerationsOutput generationsOutput = ConnectApi.EinsteinLLM.generateMessages(generationsInput);
             String aiResponseText = generationsOutput.generations[0].text;
             
             aiResponseText = aiResponseText.replace('```json', '').replace('```', '').trim();
-            
-            System.debug('--- 📂 AI FILE RESPONSE ---');
-            System.debug(aiResponseText);
             
             result.put('success', true);
             result.put('response', aiResponseText);
@@ -668,11 +691,15 @@ public without sharing class B2BCommerceOrderMatrixController {
 
     /**
      * @description Génère une explication conviviale (via IA) pour une liste d'ajustements techniques.
-     * @param adjustments Liste de chaînes décrivant les changements (ex: "SKU X: reduced from 10 to 5").
+     * @param adjustments Liste de chaînes décrivant les changements.
+     * @param userContext Contexte utilisateur.
      * @return Map<String, Object> Contenant la réponse texte de l'IA.
      */
     @AuraEnabled
-    public static Map<String, Object> explainAdjustmentsWithEinstein(List<String> adjustments) {
+    public static Map<String, Object> explainAdjustmentsWithEinstein(
+        List<String> adjustments,
+        Map<String, Object> userContext
+    ) {
         Map<String, Object> result = new Map<String, Object>();
         if (adjustments == null || adjustments.isEmpty()) {
             result.put('success', false);
@@ -680,16 +707,28 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
 
         try {
+            // AJOUT : Extraction du nom et de la langue
+            String userName = 'User';
+            String language = null;
+            if (userContext != null) {
+                if (userContext.containsKey('userName')) userName = (String)userContext.get('userName');
+                if (userContext.containsKey('language')) language = (String)userContext.get('language');
+            }
+
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            String prompt = 'You are a direct B2B Chat Assistant. Do not use email formatting. Keep it very short.\n';
-            prompt += 'The user tried to add items to their cart, but some quantities were adjusted due to inventory or business rules (Min/Max/Increment).\n';
+            String prompt = 'You are a direct B2B Chat Assistant. Do not use email formatting. Do NOT start with a greeting (Hello, Hi). Just explain the changes directly. Keep it very short.\n';            prompt += 'The user tried to add items to their cart, but some quantities were adjusted due to inventory or business rules (Min/Max/Increment).\n';
             prompt += 'Here is the technical summary of adjustments:\n';
             for(String adj : adjustments) {
                 prompt += '- ' + adj + '\n';
             }
             prompt += '\n### INSTRUCTIONS:\n';
-            prompt += 'Write a message explaining these changes to the user.\n';
+            // MODIF PROMPT : Injection
+            prompt += 'Write a message explaining these changes to ' + userName;
+            if (String.isNotBlank(language)) {
+                prompt += ' in ' + language;
+            }
+            prompt += '.\n';
             prompt += '1. Highlight the Product Name using HTML bold tags: <b>Product Name</b>.\n';
             prompt += '2. Highlight the Adjusted Quantity or Reason using HTML bold red tags: <b style="color:red">Reason/Qty</b>.\n';
             prompt += '3. Example: "I updated <b>Air Jordan</b> to <b style="color:red">10 units</b> because of stock limits."\n';
@@ -697,7 +736,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             
             generationsInput.promptTextorId = prompt;
             generationsInput.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
-            generationsInput.additionalConfig.maxTokens = 800; // Augmenté pour supporter une liste plus longue
+            generationsInput.additionalConfig.maxTokens = 800; 
             generationsInput.additionalConfig.temperature = 0.5;
             generationsInput.additionalConfig.applicationName = 'PromptBuilderPreview';
             

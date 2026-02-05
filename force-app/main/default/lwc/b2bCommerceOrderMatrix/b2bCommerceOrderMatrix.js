@@ -30,6 +30,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     @track isLoading = true;
     @track isSaving = false;
     @track error = null;
+    @track userName; // AJOUT: Variable pour stocker le nom
 
     inputQty = {}; 
     cartDataMap = {}; 
@@ -97,7 +98,17 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     connectedCallback() { console.log('🚀 [LWC] Component Initialized'); }
 
     @wire(AppContextAdapter) wiredAppContext({ data }) { if (data) { this.webstoreId = data.webstoreId; this.tryLoadData(); } }
-    @wire(SessionContextAdapter) wiredSessionContext({ data }) { if (data) { this.effectiveAccountId = data.effectiveAccountId; this._isPreview = data.isPreview; this.tryLoadData(); } }
+    
+    // MODIF: Récupération du userName
+    @wire(SessionContextAdapter) wiredSessionContext({ data }) { 
+        if (data) { 
+            this.effectiveAccountId = data.effectiveAccountId; 
+            this.userName = data.userName; // Stockage du nom utilisateur
+            this._isPreview = data.isPreview; 
+            this.tryLoadData(); 
+        } 
+    }
+    
     @wire(CartSummaryAdapter) wiredCartSummary({ data }) { if (data) { this.activeCartId = data.cartId; if (this.rawProductData.length > 0) this.fetchCartDataAndRebuild(true); } }
 
     /**
@@ -326,7 +337,7 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
      * Met à jour les quantités d'input (inputQty) basé sur les intentions "Add/Remove/Set".
      */
     handleAiAddProduct(event) {
-        const { sku, quantity, action } = event.detail; // action pourrait être utilisée plus tard
+        const { sku, quantity } = event.detail;
         
         const productFound = this.rawProductData.find(p => 
             (p.sku && p.sku === sku) || (p.StockKeepingUnit && p.StockKeepingUnit === sku)
@@ -335,14 +346,13 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         if (productFound) {
             const pId = productFound.id;
             const currentQty = parseFloat(this.inputQty[pId] || 0);
-
-            // --- MODIFICATION CHIRURGICALE START ---
-            // Appel à la fonction de validation pour s'assurer qu'on ne dépasse pas les stocks/max
+            
+            // MODIFICATION CHIRURGICALE: Utilisation de calculateValidQuantity
             const result = this.calculateValidQuantity(productFound, quantity, currentQty);
-            const validQty = result.validQty;
+            const validQty = result.validQty; // La quantité validée à ajouter
+            
             const rawNewQty = currentQty + validQty;
             const newQty = Math.max(0, rawNewQty); 
-            // --- MODIFICATION CHIRURGICALE END ---
 
             if (newQty === 0) {
                 delete this.inputQty[pId];
@@ -352,18 +362,16 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
 
             this.buildGrid(); 
             
-            // Notification améliorée avec raison si ajustement
+            // Notification ajustée
             if (validQty !== 0) {
                 let msg = `${productFound.name}: ${newQty} units.`;
                 if (result.reasons && result.reasons.length > 0) {
-                    msg += ` (${result.reasons[0]})`;
+                     msg += ` (${result.reasons[0]})`;
                 }
                 this.showToast('Updated', msg, 'success');
             } else if (quantity > 0 && validQty === 0) {
-                // Cas où on ne peut rien ajouter
                  this.showToast('Info', `Cannot add more ${productFound.name} (Limit reached).`, 'info');
             }
-
         } else {
             this.showToast('Warning', `Product with SKU ${sku} is not in the current list view.`, 'warning');
         }
@@ -371,44 +379,40 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
 
     /**
      * @description Valide une quantité par rapport aux règles produit (Min, Max, Incrément, Stock).
-     * @param product Objet produit complet (structure rawProductData).
+     * @param product Objet produit complet.
      * @param requestedQty Quantité demandée (delta à ajouter).
-     * @param currentQty Quantité DÉJÀ présente dans la liste input (pour le calcul du plafond Max).
+     * @param currentQty Quantité DÉJÀ présente dans la liste (pour le calcul du plafond Max).
      * @return { validQty, reasons[] }
      */
     calculateValidQuantity(product, requestedQty, currentQty = 0) {
         let validQty = parseFloat(requestedQty);
         let reasons = [];
         
-        // Extraction sécurisée des règles selon la structure de votre objet product
         const min = product.minQty ? parseFloat(product.minQty) : 1;
         const max = product.maxQty ? parseFloat(product.maxQty) : 999999;
         const inc = product.increment ? parseFloat(product.increment) : 1;
         const isInfiniteStock = (product.stock === undefined || product.stock === null || product.stock === 'null');
         const stock = isInfiniteStock ? 999999 : parseFloat(product.stock);
 
-        // 1. Check Increment (si c'est un ajout positif)
+        // Check Incrément (si ajout)
         if (validQty > 0 && validQty % inc !== 0) {
             validQty = Math.ceil(validQty / inc) * inc;
             reasons.push(`Adjusted to multiple of ${inc}`);
         }
 
-        // 2. Check Minimum (Seulement si le total final serait < min, mais ici on gère le delta)
-        // Simplification pour l'IA : si on ajoute, on s'assure d'ajouter au moins le min si on part de 0
+        // Check Minimum (si on part de 0)
         if (currentQty === 0 && validQty < min && validQty > 0) {
             validQty = min;
             reasons.push(`Adjusted to minimum quantity of ${min}`);
         }
 
-        // 3. Check Maximum Quantity & Stock (CORRECTION PRINCIPALE)
+        // Check Max & Stock (CORRECTION: On prend en compte le TOTAL current + valid)
         const effectiveMax = Math.min(stock, max);
 
-        // On vérifie le plafond par rapport au TOTAL (Existant + Ajout) et non juste l'ajout.
         if ((currentQty + validQty) > effectiveMax) {
-            // On calcule l'espace restant
+            // Espace restant
             const spaceAvailable = Math.max(0, effectiveMax - currentQty);
             
-            // Si la demande dépasse l'espace restant, on plafonne à l'espace restant
             if (validQty > spaceAvailable) {
                 validQty = spaceAvailable;
                 reasons.push(`Adjusted to ${effectiveMax} units total (Stock/Max Limit reached)`);
