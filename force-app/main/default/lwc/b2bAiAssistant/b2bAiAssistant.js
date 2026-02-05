@@ -2,6 +2,7 @@ import { LightningElement, track, api } from 'lwc';
 import askEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.askEinstein';
 import analyzeFileWithEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.analyzeFileWithEinstein';
 import explainAdjustmentsWithEinstein from '@salesforce/apex/B2BCommerceOrderMatrixController.explainAdjustmentsWithEinstein';
+import detectLanguage from '@salesforce/apex/B2BCommerceOrderMatrixController.detectLanguage'; // AJOUT IMPORT
 import communityBasePath from '@salesforce/community/basePath';
 
 /**
@@ -14,9 +15,9 @@ export default class B2bAiAssistant extends LightningElement {
     
     @api products = [];
 
-    // --- AJOUT : GESTION UTILISATEUR & LANGUE ---
+    // --- GESTION UTILISATEUR & LANGUE ---
     _userName;
-    @track userLanguage; // Stocke la langue détectée (ex: 'fr', 'en_US')
+    @track userLanguage; // Stocke la langue détectée
     
     @api
     get userName() { return this._userName; }
@@ -176,6 +177,20 @@ export default class B2bAiAssistant extends LightningElement {
      * @description Envoie le contenu du fichier à la nouvelle méthode IA Apex.
      */
     async uploadFileToAi(content, fileName) {
+        // --- 1. DETECTION LANGUE IMMEDIATE (FICHIER) ---
+        // On prend un extrait pour la détection
+        const sampleText = content.substring(0, 500);
+        try {
+            const detected = await detectLanguage({ text: sampleText });
+            if (detected && detected !== 'Unknown') {
+                this.userLanguage = detected;
+                console.warn('🌐 [LWC FILE] Language updated to:', this.userLanguage);
+            }
+        } catch(e) { 
+            console.warn('Lang detect failed (file)', e); 
+        }
+        // -----------------------------------------------
+
         const rawCatalogData = this.products.map(p => this.mapProductToContext(p));
         const catalogJson = JSON.stringify(rawCatalogData);
 
@@ -188,7 +203,6 @@ export default class B2bAiAssistant extends LightningElement {
             const result = await analyzeFileWithEinstein({
                 fileContent: content,
                 productContextString: catalogJson,
-                // MODIF: Transmission dynamique de la langue
                 userContext: { userName: this.userName, language: this.userLanguage }
             });
 
@@ -198,6 +212,11 @@ export default class B2bAiAssistant extends LightningElement {
             if (result.success) {
                 const aiData = JSON.parse(result.response);
                 
+                // Fallback si l'Apex détecte mieux
+                if (aiData.detectedLanguage) {
+                    this.userLanguage = aiData.detectedLanguage;
+                }
+
                 let tableItems = [];
                 if (aiData.items && Array.isArray(aiData.items)) {
                     aiData.items.forEach(item => {
@@ -300,11 +319,12 @@ export default class B2bAiAssistant extends LightningElement {
 
             // FEEDBACK IA (Si ajustements)
             if (adjustmentLogs.length > 0) {
+                console.log('📝 Sending Adjustment Logs to AI:', adjustmentLogs);
+                
                 this.isTyping = true;
                 try {
                     const explainRes = await explainAdjustmentsWithEinstein({ 
                         adjustments: adjustmentLogs,
-                        // MODIF: Transmission dynamique de la langue
                         userContext: { userName: this.userName, language: this.userLanguage }
                     });
                     this.isTyping = false;
@@ -339,6 +359,19 @@ export default class B2bAiAssistant extends LightningElement {
         this.isTyping = true;
         this.scrollToBottom();
 
+        // --- 1. DETECTION LANGUE IMMEDIATE (AJOUT) ---
+        // Appel d'Apex pour identifier la langue sur le texte actuel uniquement
+        try {
+            const detected = await detectLanguage({ text: text });
+            if (detected && detected !== 'Unknown') {
+                this.userLanguage = detected;
+                console.warn('🌐 [LWC] Language updated to:', this.userLanguage);
+            }
+        } catch(e) { 
+            console.warn('Lang detect failed', e); 
+        }
+        // ---------------------------------------------
+
         const rawCatalogData = this.products.map(p => this.mapProductToContext(p));
         const rawLastShownData = this.lastShownItems.map(item => {
             const updated = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
@@ -358,11 +391,11 @@ export default class B2bAiAssistant extends LightningElement {
         const lastShownJson = JSON.stringify(rawLastShownData);
 
         try {
+            // Appel Apex (maintenant avec userLanguage potentiellement mis à jour)
             const result = await askEinstein({ 
                 userMessage: this.conversationContext,
                 productContextString: catalogJson,
                 lastShownContextString: lastShownJson,
-                // MODIF: Transmission dynamique de la langue
                 userContext: { userName: this.userName, language: this.userLanguage }
             });
             
@@ -374,10 +407,9 @@ export default class B2bAiAssistant extends LightningElement {
                     const aiData = JSON.parse(result.response);
                     this.conversationContext += `\nAssistant: ${aiData.message}`;
 
-                    // MODIF : Mise à jour de la langue détectée pour les échanges futurs
+                    // Fallback si l'Apex a raffiné la détection
                     if (aiData.detectedLanguage) {
                         this.userLanguage = aiData.detectedLanguage;
-                        console.log('🌐 [AI DEBUG] Updated Language Context to:', this.userLanguage);
                     }
 
                     let productsToDisplay = [];
@@ -456,7 +488,6 @@ export default class B2bAiAssistant extends LightningElement {
                         this.isTyping = true;
                         const explainRes = await explainAdjustmentsWithEinstein({ 
                             adjustments: adjustmentLogs,
-                            // MODIF: Transmission dynamique de la langue
                             userContext: { userName: this.userName, language: this.userLanguage }
                         });
                         this.isTyping = false;

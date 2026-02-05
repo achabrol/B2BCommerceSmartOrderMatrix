@@ -546,7 +546,6 @@ public without sharing class B2BCommerceOrderMatrixController {
         System.debug('User Message: ' + userMessage);
         
         try {
-            // AJOUT : Extraction du nom et de la langue
             String userName = 'User';
             String language = null;
             if (userContext != null) {
@@ -556,7 +555,6 @@ public without sharing class B2BCommerceOrderMatrixController {
 
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            // MODIF PROMPT : Injection Nom + Langue
             String prompt = 'You are a friendly B2B Sales Assistant for user ' + userName + '.\n';
             if (String.isNotBlank(language)) {
                 prompt += 'Current Communication Language: ' + language + '.\n';
@@ -579,7 +577,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '4. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
             prompt += '     "message": "Short text summary in the target language", \n';
-            prompt += '     "detectedLanguage": "ISO code of language used (e.g. en_US, fr, de)", \n';
+            prompt += '     "detectedLanguage": "' + (String.isNotBlank(language) ? language : 'en_US') + '", \n';
             prompt += '     "items": [ \n';
             prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "set" OR "search" } \n';
             prompt += '     ] \n';
@@ -628,7 +626,6 @@ public without sharing class B2BCommerceOrderMatrixController {
         System.debug('--- 📂 FILE ANALYSIS START ---');
 
         try {
-            // AJOUT : Extraction du nom et de la langue
             String userName = 'User';
             String language = null;
             if (userContext != null) {
@@ -638,7 +635,6 @@ public without sharing class B2BCommerceOrderMatrixController {
 
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            // MODIF PROMPT : Injection
             String prompt = 'You are a B2B Data Extraction Assistant processing a file upload from user: ' + userName + '.\n';
             if (String.isNotBlank(language)) {
                 prompt += 'Respond in ' + language + '.\n';
@@ -659,6 +655,7 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '### OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
             prompt += '     "message": "Summary of what was found (e.g., I found 3 items matching our catalog) in the target language.", \n';
+            prompt += '     "detectedLanguage": "' + (String.isNotBlank(language) ? language : 'en_US') + '", \n';
             prompt += '     "items": [ \n';
             prompt += '        { "sku": "MATCHED_SKU", "quantity": NUMBER_FROM_FILE } \n';
             prompt += '     ] \n';
@@ -707,7 +704,6 @@ public without sharing class B2BCommerceOrderMatrixController {
         }
 
         try {
-            // AJOUT : Extraction du nom et de la langue
             String userName = 'User';
             String language = null;
             if (userContext != null) {
@@ -717,21 +713,24 @@ public without sharing class B2BCommerceOrderMatrixController {
 
             ConnectApi.EinsteinLlmGenerationsInput generationsInput = new ConnectApi.EinsteinLlmGenerationsInput();
             
-            String prompt = 'You are a direct B2B Chat Assistant. Do not use email formatting. Do NOT start with a greeting (Hello, Hi). Just explain the changes directly. Keep it very short.\n';            prompt += 'The user tried to add items to their cart, but some quantities were adjusted due to inventory or business rules (Min/Max/Increment).\n';
+            String prompt = 'You are a direct B2B Chat Assistant. Do not use email formatting. Do NOT start with a greeting (Hello, Hi). Just explain the changes directly. Keep it very short.\n';
+            prompt += 'The user tried to add items to their cart, but some quantities were adjusted due to inventory or business rules (Min/Max/Increment).\n';
             prompt += 'Here is the technical summary of adjustments:\n';
             for(String adj : adjustments) {
                 prompt += '- ' + adj + '\n';
             }
             prompt += '\n### INSTRUCTIONS:\n';
-            // MODIF PROMPT : Injection
             prompt += 'Write a message explaining these changes to ' + userName;
             if (String.isNotBlank(language)) {
                 prompt += ' in ' + language;
+                prompt += '. IMPORTANT: The response MUST be in ' + language + '. Do not output English unless requested.\n';
+            } else {
+                prompt += '.\n';
             }
-            prompt += '.\n';
+            
             prompt += '1. Highlight the Product Name using HTML bold tags: <b>Product Name</b>.\n';
             prompt += '2. Highlight the Adjusted Quantity or Reason using HTML bold red tags: <b style="color:red">Reason/Qty</b>.\n';
-            prompt += '3. Example: "I updated <b>Air Jordan</b> to <b style="color:red">10 units</b> because of stock limits."\n';
+            prompt += '3. Example format (translate to target language): "I updated <b>Air Jordan</b> to <b style="color:red">10 units</b> because of stock limits."\n';
             prompt += '4. You MUST mention EACH item from the list above. Do not summarize (e.g. do NOT say "various items were adjusted").\n';
             
             generationsInput.promptTextorId = prompt;
@@ -752,5 +751,37 @@ public without sharing class B2BCommerceOrderMatrixController {
             result.put('message', e.getMessage());
         }
         return result;
+    }
+
+    // --- 12. HELPER DETECTION LANGUE (PUBLIC POUR APPEL LWC DIRECT) ---
+
+    /**
+     * @description Méthode publique pour détecter la langue d'un texte via LLM. 
+     * Appelée directement par le LWC avant les grosses requêtes.
+     * @param text Le texte à analyser.
+     * @return Code ISO de la langue (ex: fr, en_US) ou 'Unknown'.
+     */
+    @AuraEnabled
+    public static String detectLanguage(String text) {
+        if (String.isBlank(text)) return 'Unknown';
+        try {
+            ConnectApi.EinsteinLlmGenerationsInput input = new ConnectApi.EinsteinLlmGenerationsInput();
+            input.promptTextorId = 'Identify the language of the following text. Return ONLY the ISO code (e.g. en_US, fr, de, es, hi). Do not add any punctuation. Text: ' + text;
+            
+            input.additionalConfig = new ConnectApi.EinsteinLlmAdditionalConfigInput();
+            input.additionalConfig.maxTokens = 10;
+            input.additionalConfig.temperature = 0.1; 
+            input.additionalConfig.applicationName = 'PromptBuilderPreview';
+
+            ConnectApi.EinsteinLLMGenerationsOutput output = ConnectApi.EinsteinLLM.generateMessages(input);
+            String lang = output.generations[0].text.trim();
+            if (lang.length() > 5 && lang.contains(' ')) {
+                lang = lang.split(' ')[0]; 
+            }
+            return lang;
+        } catch (Exception e) {
+            System.debug('Language Detection Failed: ' + e.getMessage());
+            return 'Unknown';
+        }
     }
 }
