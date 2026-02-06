@@ -529,6 +529,7 @@ public without sharing class B2BCommerceOrderMatrixController {
      * @param userMessage Le message de l'utilisateur.
      * @param productContextString Le catalogue JSON.
      * @param lastShownContextString Les derniers produits vus/interagis (Mémoire court terme).
+     * @param orderContext Le contexte de l'historique des commandes (JSON). -- NOUVEAU
      * @param userContext Contexte utilisateur (userName, language).
      * @return Map<String, Object> Réponse contenant le JSON généré par l'IA.
      */
@@ -537,6 +538,7 @@ public without sharing class B2BCommerceOrderMatrixController {
         String userMessage, 
         String productContextString, 
         String lastShownContextString,
+        String orderContext, // AJOUT PARAMETRE
         Map<String, Object> userContext 
     ) {
         Map<String, Object> result = new Map<String, Object>();
@@ -562,19 +564,29 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += 'You have access to CATALOG DATA (JSON) and RECENTLY SHOWN ITEMS.\n\n';
             
             prompt += '### CATALOG DATA:\n' + productContextString + '\n\n';
+            
+            // --- AJOUT LOGIQUE PROMPT ORDER CONTEXT ---
+            if (String.isNotBlank(orderContext)) {
+                prompt += '### ORDER HISTORY:\n' + orderContext + '\n\n';
+            }
+            // -------------------------------------------
+            
             prompt += '### RECENTLY SHOWN ITEMS (MEMORY):\n' + (lastShownContextString != null ? lastShownContextString : '[]') + '\n\n';
             
             prompt += '### INSTRUCTIONS:\n';
             prompt += '1. VISUAL CARDS: If you recommend specific products, include them in the "items" array (action="search").\n';
             prompt += '2. TEXT MESSAGE: Keep it SHORT. No technical specs in text. Respond in the same language as the User Query or the provided Context Language.\n';
-            prompt += '3. ACTIONS:\n';
+            // --- AJOUT INSTRUCTION ORDER ---
+            prompt += '3. ORDERS: You can use ORDER HISTORY to answer questions about past orders, status, or reordering.\n';
+            // --------------------------------
+            prompt += '4. ACTIONS:\n';
             prompt += '   - "Add 5" -> action="add", quantity=5\n';
             prompt += '   - "Remove 2" -> action="remove", quantity=2\n';
             prompt += '   - "Set to 10" -> action="set", quantity=10\n';
             prompt += '   - "Add All" / "Everything" / "Max" -> action="set", quantity=9999999\n';
             prompt += '   - "Search/Show X" -> action="search"\n';
 
-            prompt += '4. OUTPUT FORMAT (JSON ONLY):\n';
+            prompt += '5. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
             prompt += '     "message": "Short text summary in the target language", \n';
             prompt += '     "detectedLanguage": "' + (String.isNotBlank(language) ? language : 'en_US') + '", \n';

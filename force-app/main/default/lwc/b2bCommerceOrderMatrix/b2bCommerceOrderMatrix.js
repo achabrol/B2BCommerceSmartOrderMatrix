@@ -140,6 +140,11 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
     async loadPastOrdersBackground() {
         try {
             const result = await getPastOrders({ effectiveAccountId: this.effectiveAccountId, fromDate: null, toDate: null });
+            
+            // --- MODIF START: Log JSON ---
+            console.log('📢 [DEBUG JSON] getPastOrders result:', JSON.parse(JSON.stringify(result)));
+            // --- MODIF END ---
+
             this.pastOrdersList = result.orders || [];
             const allItems = result.allItems || [];
             this.orderItemsCache = {}; 
@@ -244,6 +249,11 @@ export default class B2bCommerceOrderMatrix extends LightningElement {
         this.isLoading = true;
         try {
             const result = await getOrderProducts({ communityId: communityId, effectiveAccountId: this.effectiveAccountId, orderSummaryId: orderId, skipEnrichment: true });
+             
+             // --- MODIF START: Log JSON ---
+             console.log('📢 [DEBUG JSON] getOrderProducts result:', JSON.parse(JSON.stringify(result)));
+             // --- MODIF END ---
+
              const orderItemIds = new Set();
              if(result.orderQuantities) {
                  result.orderQuantities.forEach(qty => {

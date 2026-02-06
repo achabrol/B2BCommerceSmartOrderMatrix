@@ -14,6 +14,9 @@ import communityBasePath from '@salesforce/community/basePath';
 export default class B2bAiAssistant extends LightningElement {
     
     @api products = [];
+    // --- NOUVEAUX ATTRIBUTS POUR LES COMMANDES ---
+    @api pastOrders = [];
+    @api orderItems = {};
 
     // --- GESTION UTILISATEUR & LANGUE ---
     _userName;
@@ -140,6 +143,52 @@ export default class B2bAiAssistant extends LightningElement {
             isAdjusted: isAdjusted,
             reasons: reasons
         };
+    }
+    
+    /**
+     * @description Formate les commandes et leurs items en une chaîne JSON simplifiée pour l'IA.
+     * Limite aux 10 dernières commandes pour optimiser la taille du contexte.
+     */
+    formatOrdersForContext() {
+        if (!this.pastOrders || this.pastOrders.length === 0) {
+            return 'No order history available.';
+        }
+
+        // On prend les 10 dernières commandes max
+        const recentOrders = this.pastOrders.slice(0, 10);
+        
+        const simplifiedOrders = recentOrders.map(order => {
+            // Récupération des items depuis le cache parent
+            // CORRECTION: Utilisation de order.id (venant de l'Apex) au lieu de orderSummaryId qui n'existe pas
+            const orderId = order.id || order.orderSummaryId;
+            const items = this.orderItems && this.orderItems[orderId] 
+                ? this.orderItems[orderId] 
+                : []; 
+            
+            // Essai d'enrichissement des items avec le SKU/Nom si disponible dans this.products (Catalogue courant)
+            const enrichedItems = items.map(it => {
+                const prodInCat = this.products.find(p => p.id === it.productId);
+                return {
+                    sku: prodInCat ? (prodInCat.sku || prodInCat.StockKeepingUnit) : it.productId,
+                    qty: it.quantity,
+                    name: prodInCat ? prodInCat.name : 'Unknown Product'
+                };
+            });
+
+            return {
+                OrderNumber: order.orderNumber,
+                Status: order.status,
+                Date: order.orderedDate,
+                Total: order.grandTotalAmount,
+                Currency: order.currencyIsoCode,
+                Items: enrichedItems
+            };
+        });
+
+        // AJOUT: Debug Log pour vérifier la structure dans la console Chrome
+        console.log('📢 [DEBUG CONTEXT] Orders for AI:', JSON.parse(JSON.stringify(simplifiedOrders)));
+
+        return JSON.stringify(simplifiedOrders);
     }
 
     // --- GESTION FICHIERS ---
@@ -390,12 +439,16 @@ export default class B2bAiAssistant extends LightningElement {
         const catalogJson = JSON.stringify(rawCatalogData);
         const lastShownJson = JSON.stringify(rawLastShownData);
 
+        // 3. Préparation du contexte COMMANDES (Historique) - NOUVEAU
+            const orderContext = this.formatOrdersForContext();
+
         try {
             // Appel Apex (maintenant avec userLanguage potentiellement mis à jour)
             const result = await askEinstein({ 
                 userMessage: this.conversationContext,
                 productContextString: catalogJson,
                 lastShownContextString: lastShownJson,
+                orderContext: orderContext, // NOUVEAU PARAMETRE
                 userContext: { userName: this.userName, language: this.userLanguage }
             });
             
