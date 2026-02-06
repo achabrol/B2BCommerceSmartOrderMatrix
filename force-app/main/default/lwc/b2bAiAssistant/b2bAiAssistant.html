@@ -43,22 +43,33 @@
                                             </template>
                                         </div>
 
-                                        <div class="card-compact-footer">
-                                            <div class="price-wrapper">
-                                                <template if:true={pCard.promo}>
-                                                    <div class="promo-text">{pCard.promo}</div>
-                                                </template>
-                                                <template if:true={pCard.listPrice}>
-                                                    <span class="list-price">{pCard.currency} {pCard.listPrice}</span>
-                                                </template>
-                                                <span class="current-price">{pCard.currency} {pCard.price}</span>
+                                        <div class="file-card-footer-wrapper">
+                                            <div class="card-compact-footer">
+                                                <div class="price-wrapper">
+                                                    <template if:true={pCard.promo}>
+                                                        <div class="promo-text">{pCard.promo}</div>
+                                                    </template>
+                                                    <template if:true={pCard.listPrice}>
+                                                        <span class="list-price">{pCard.currency} {pCard.listPrice}</span>
+                                                    </template>
+                                                    <span class="current-price">{pCard.currency} {pCard.price}</span>
+                                                </div>
+                                                
+                                                <button class="add-btn-mini" onclick={handleAddRequest} 
+                                                        data-sku={pCard.sku} data-qty="1">
+                                                    Add
+                                                </button>
                                             </div>
-                                            
-                                            <button class="add-btn-mini" onclick={handleAddRequest} 
-                                                    data-sku={pCard.sku} data-qty="1">
-                                                Add
-                                            </button>
+
+                                            <template if:true={pCard.quantityOrdered}>
+                                                <div class="qty-badge-row">
+                                                    <div class="ordered-qty-badge">
+                                                        Ordered: {pCard.quantityOrdered}
+                                                    </div>
+                                                </div>
+                                            </template>
                                         </div>
+                                        
                                     </div>
 
                                 </div>

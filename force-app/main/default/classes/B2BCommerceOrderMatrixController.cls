@@ -585,13 +585,16 @@ public without sharing class B2BCommerceOrderMatrixController {
             prompt += '   - "Set to 10" -> action="set", quantity=10\n';
             prompt += '   - "Add All" / "Everything" / "Max" -> action="set", quantity=9999999\n';
             prompt += '   - "Search/Show X" -> action="search"\n';
+            
+            // MODIFICATION CHIRURGICALE : Action pour détails commande
+            prompt += '   - "Show Order Details" -> action="show_details", quantity=ORDERED_QTY\n';
 
             prompt += '5. OUTPUT FORMAT (JSON ONLY):\n';
             prompt += '   { \n';
             prompt += '     "message": "Short text summary in the target language", \n';
             prompt += '     "detectedLanguage": "' + (String.isNotBlank(language) ? language : 'en_US') + '", \n';
             prompt += '     "items": [ \n';
-            prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "set" OR "search" } \n';
+            prompt += '        { "sku": "FOUND_SKU", "quantity": NUMBER, "action": "add" OR "remove" OR "set" OR "search" OR "show_details" } \n';
             prompt += '     ] \n';
             prompt += '   }\n\n';
             

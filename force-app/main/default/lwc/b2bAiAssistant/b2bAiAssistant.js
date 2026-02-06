@@ -272,6 +272,7 @@ export default class B2bAiAssistant extends LightningElement {
                         let realDataProduct = this.products.find(p => (p.sku === item.sku || p.StockKeepingUnit === item.sku));
                         if (realDataProduct) {
                             
+                            // MODIF CHIRURGICALE: formatCard sans override qty ici, car traité par fileItems logic
                             const cardVisuals = this.formatCard(realDataProduct);
                             const contextP = this.mapProductToContext(realDataProduct);
                             
@@ -480,8 +481,14 @@ export default class B2bAiAssistant extends LightningElement {
                                 let finalQty = 0;
                                 let qtyRaw = item.quantity ? parseInt(item.quantity, 10) : 0;
 
-                                // Logique Actions
-                                if (item.action === 'set') {
+                                // --- MODIF CHIRURGICALE : Cas Affichage Détail Commande ---
+                                if (item.action === 'show_details') {
+                                    // On force l'affichage de la carte avec la quantité ordonnée spécifique
+                                    productsToDisplay.push(this.formatCard(foundProduct, qtyRaw));
+                                }
+                                // -----------------------------------------------------------
+                                // Logique Actions standards
+                                else if (item.action === 'set') {
                                     const currentSelected = (realDataProduct && realDataProduct.qtyValue) ? parseFloat(realDataProduct.qtyValue) : 0;
                                     finalQty = qtyRaw - currentSelected;
                                 } else if (item.action === 'remove') {
@@ -490,8 +497,8 @@ export default class B2bAiAssistant extends LightningElement {
                                     finalQty = qtyRaw; // Cas 'add' standard
                                 }
 
-                                // VALIDATION STRICTE AVANT DISPATCH
-                                if (finalQty > 0 && item.action !== 'search' && realDataProduct) {
+                                // VALIDATION STRICTE AVANT DISPATCH (sauf pour show_details qui est informatif)
+                                if (finalQty > 0 && item.action !== 'search' && item.action !== 'show_details' && realDataProduct) {
                                     // Utilisation de la quantité BRUTE si > 9M pour activer la logique "Max"
                                     let qtyToValidate = item.quantity > 9000000 ? item.quantity : finalQty;
                                     
@@ -524,7 +531,9 @@ export default class B2bAiAssistant extends LightningElement {
                                     }));
                                 }
 
-                                productsToDisplay.push(this.formatCard(foundProduct));
+                                if (item.action !== 'show_details') {
+                                    productsToDisplay.push(this.formatCard(foundProduct));
+                                }
                             }
                         });
                     }
@@ -583,10 +592,12 @@ export default class B2bAiAssistant extends LightningElement {
     /**
      * @description Formate un objet produit brut en objet utilisable pour l'affichage de la carte (Card) dans le chat.
      * AJOUT : Construction du productUrl pour lien cliquable.
+     * MODIFICATION : Ajout du paramètre qtyOverride pour l'historique de commande.
      * @param p Objet produit brut.
+     * @param qtyOverride Quantité spécifique à afficher (lecture seule).
      * @return Object Objet structuré pour le HTML.
      */
-    formatCard(p) {
+    formatCard(p, qtyOverride = null) {
         let specs = [];
         if (p.variationInfo) {
             specs = p.variationInfo.split(', ').map((specStr, index) => {
@@ -604,7 +615,8 @@ export default class B2bAiAssistant extends LightningElement {
             promo: p.promoName || p.promo,
             specs: specs, 
             currency: 'USD',
-            productUrl: communityBasePath + '/product/' + p.id // CORRECTION ICI (Base Path)
+            productUrl: communityBasePath + '/product/' + p.id, // CORRECTION ICI (Base Path)
+            quantityOrdered: qtyOverride // NOUVELLE PROPRIETE
         };
     }
 

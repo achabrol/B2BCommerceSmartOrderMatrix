@@ -208,10 +208,22 @@
     justify-content: flex-end; 
 }
 
-/* Badge Bleu */
+/* Badge Bleu (Fichier) */
 .qty-found-badge {
     background-color: #0176d3; 
     color: white;
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+/* AJOUT : Badge Gris (Historique) */
+.ordered-qty-badge {
+    background-color: #ecebea;
+    color: #080707;
+    border: 1px solid #dddbda;
     font-size: 0.65rem;
     font-weight: 600;
     padding: 2px 8px;
